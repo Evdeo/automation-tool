@@ -1,42 +1,21 @@
-import ctypes
+"""End-to-end demo: drives Win11 Notepad through a full work cycle and
+loops under the watchdog so a hung iteration is killed and restarted.
+
+State machine: open → new_tab → zoom_in → (5s) → zoom_out → (5s) →
+type_time → save → close. Each state function returns the name of the
+next state (or None to end the pass). `ctx` is a per-pass dict — use it
+to share state between functions (e.g. `ctx["window"]` is the Notepad
+window every later state operates on).
+
+Run with:    python run.py
+"""
 import time
-from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 
 import pyautogui
-import uiautomation as auto
 
-from core import actions, apps, db
-
-
-_user32 = ctypes.windll.user32
-
-
-def _find_save_dialog(timeout=8):
-    deadline = time.time() + timeout
-    EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    while time.time() < deadline:
-        found = []
-
-        def cb(hwnd, _lp):
-            if not _user32.IsWindowVisible(hwnd):
-                return True
-            cls = ctypes.create_unicode_buffer(64)
-            _user32.GetClassNameW(hwnd, cls, 64)
-            if cls.value == "#32770":
-                length = _user32.GetWindowTextLengthW(hwnd)
-                buf = ctypes.create_unicode_buffer(length + 1)
-                _user32.GetWindowTextW(hwnd, buf, length + 1)
-                if "save" in buf.value.lower():
-                    found.append(hwnd)
-            return True
-
-        _user32.EnumWindows(EnumWindowsProc(cb), 0)
-        if found:
-            return auto.ControlFromHandle(found[0])
-        time.sleep(0.2)
-    return None
+from core import actions, apps, db, dialogs, runner
 
 
 NOTEPAD = "notepad.exe"
@@ -49,128 +28,67 @@ NEW_TAB = "New tab:MenuItemControl"
 ZOOM = "Zoom:MenuItemControl"
 ZOOM_IN = "Zoom in:MenuItemControl"
 ZOOM_OUT = "Zoom out:MenuItemControl"
-SAVE = "Save:MenuItemControl"
 CLOSE_TAB = "Close tab:MenuItemControl"
 EDITOR = "Text editor:DocumentControl"
-
-
-def _focus(ctx):
-    apps.bring_to_foreground(ctx["window"])
-
-
-def _dismiss_modal_popups(window, max_passes=5):
-    from core import tree as tree_mod
-    for _ in range(max_passes):
-        walked = tree_mod.walk_live(window)
-        ok_btn = None
-        for n in walked:
-            if n["name"] == "OK" and n["role"] == "ButtonControl":
-                ok_btn = n["ctrl"]
-                break
-        if ok_btn is None:
-            return
-        r = ok_btn.BoundingRectangle
-        if r.right - r.left <= 0:
-            return
-        cx, cy = (r.left + r.right) // 2, (r.top + r.bottom) // 2
-        pyautogui.click(cx, cy)
-        time.sleep(0.6)
+SAVE_DLG_FILENAME = "File name:ComboBoxControl"
 
 
 def state_open(ctx):
     if not apps.is_running(NOTEPAD):
         apps.open_app(NOTEPAD)
-        time.sleep(2.5)
     win = apps.get_window(TITLE)
+    apps.bring_to_foreground(win)
+    dialogs.dismiss_ok_popups(win)
     ctx["window"] = win
-    _focus(ctx)
-    _dismiss_modal_popups(win)
     db.log("results", "opened", win.Name)
     return "new_tab"
 
 
 def state_new_tab(ctx):
-    _focus(ctx)
     actions.press_path(ctx["window"], FILE_MENU, NEW_TAB)
-    time.sleep(0.8)
     db.log("results", "new_tab", 1)
     return "zoom_in"
 
 
 def state_zoom_in(ctx):
-    time.sleep(5.0)
-    _focus(ctx)
+    time.sleep(5.0)  # demo pacing — user-visible
     actions.press_path(ctx["window"], VIEW_MENU, ZOOM, ZOOM_IN)
     db.log("results", "zoom_in", 1)
     return "zoom_out"
 
 
 def state_zoom_out(ctx):
-    time.sleep(5.0)
-    _focus(ctx)
+    time.sleep(5.0)  # demo pacing — user-visible
     actions.press_path(ctx["window"], VIEW_MENU, ZOOM, ZOOM_OUT)
     db.log("results", "zoom_out", 1)
     return "type_time"
 
 
 def state_type_time(ctx):
-    time.sleep(0.5)
-    _focus(ctx)
-    pyautogui.press("escape")
-    time.sleep(0.3)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     actions.write_text(ctx["window"], EDITOR, now)
-    time.sleep(0.5)
     ctx["written_text"] = now
     db.log("results", "wrote_time", now)
     return "save"
 
 
 def state_save(ctx):
-    import pyperclip
     SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
     if SAVE_PATH.exists():
         SAVE_PATH.unlink()
-    _focus(ctx)
     pyautogui.hotkey("ctrl", "s")
-    dlg = _find_save_dialog()
+    dlg = dialogs.find_dialog("save")
     if dlg is None:
         raise RuntimeError("Save As dialog did not appear")
-
-    name_combo = dlg.ComboBoxControl(Name="File name:")
-    if not name_combo.Exists(0, 0):
-        raise RuntimeError("File name combo not found in Save As dialog")
-    edit = name_combo.EditControl()
-    target = edit if edit.Exists(0, 0) else name_combo
-    r = target.BoundingRectangle
-    pyautogui.click((r.left + r.right) // 2, (r.top + r.bottom) // 2)
-    time.sleep(0.2)
-    pyautogui.hotkey("ctrl", "a")
-    time.sleep(0.1)
-    pyautogui.press("delete")
-    time.sleep(0.1)
-    pyperclip.copy(str(SAVE_PATH))
-    pyautogui.hotkey("ctrl", "v")
-    time.sleep(0.4)
-
-    save_btn = dlg.ButtonControl(Name="Save")
-    if save_btn.Exists(0, 0):
-        try:
-            save_btn.GetInvokePattern().Invoke()
-        except Exception:
-            r = save_btn.BoundingRectangle
-            pyautogui.click((r.left + r.right) // 2, (r.top + r.bottom) // 2)
-    else:
-        pyautogui.press("enter")
-    time.sleep(2.5)
+    dialogs.save_as(dlg, SAVE_PATH)
+    actions.wait_until_absent(ctx["window"], SAVE_DLG_FILENAME, timeout=10)
+    apps.bring_to_foreground(ctx["window"])
     db.log("results", "saved", str(SAVE_PATH))
     return "close"
 
 
 def state_close(ctx):
-    _focus(ctx)
-    _dismiss_modal_popups(ctx["window"])
-    _focus(ctx)
+    dialogs.dismiss_ok_popups(ctx["window"])
     actions.press_path(ctx["window"], FILE_MENU, CLOSE_TAB)
     db.log("results", "closed", 1)
     return None
@@ -187,7 +105,7 @@ STATES = {
 }
 
 
-def run_once():
+def state_machine():
     ctx = {}
     state = "open"
     while state is not None:
@@ -195,6 +113,15 @@ def run_once():
     return ctx
 
 
+def loop():
+    while True:
+        state_machine()
+        time.sleep(2)
+
+
+def main():
+    runner.run_with_watchdog(loop)
+
+
 if __name__ == "__main__":
-    ctx = run_once()
-    print(f"DONE: wrote {ctx.get('written_text')!r} to {SAVE_PATH}")
+    main()

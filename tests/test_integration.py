@@ -19,7 +19,7 @@ import psutil
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config  # noqa: E402
-from core import actions, apps, db, inspector, tree  # noqa: E402
+from core import actions, apps, db, dialogs, inspector, tree  # noqa: E402
 
 
 def _kill_notepad():
@@ -392,6 +392,107 @@ class TestCheckActive(WindowsUITestBase):
         import pyautogui as _p
         _p.press("escape")
         time.sleep(0.4)
+
+
+class TestFindDialog(WindowsUITestBase):
+    """`dialogs.find_dialog` enumerates owned top-level #32770 windows that
+    `auto.GetRootControl().GetChildren()` doesn't expose."""
+
+    def test_find_save_dialog_appears_on_ctrl_s(self):
+        # Need editable content so Ctrl+S triggers Save As.
+        actions.press_path(self.win, "File:MenuItemControl",
+                           "New tab:MenuItemControl")
+        time.sleep(0.8)
+        apps.bring_to_foreground(self.win)
+        actions.write_text(self.win, "Text editor:DocumentControl", "x")
+        time.sleep(0.3)
+
+        import pyautogui
+        pyautogui.hotkey("ctrl", "s")
+        dlg = dialogs.find_dialog("save", timeout=8)
+        try:
+            self.assertIsNotNone(dlg, "find_dialog should locate Save As")
+            self.assertEqual(dlg.ClassName, "#32770")
+            self.assertIn("save", (dlg.Name or "").lower())
+        finally:
+            # close the dialog so the test fixture tearDown is clean
+            pyautogui.press("escape")
+            time.sleep(0.5)
+
+    def test_find_dialog_returns_none_on_timeout(self):
+        t0 = time.time()
+        dlg = dialogs.find_dialog("definitely_not_a_real_title", timeout=0.5)
+        elapsed = time.time() - t0
+        self.assertIsNone(dlg)
+        self.assertLess(elapsed, 1.5,
+                        "find_dialog must honour its timeout argument")
+
+
+class TestDismissOkPopups(WindowsUITestBase):
+    def test_no_popups_returns_zero(self):
+        # Fresh Notepad has no OK-button popup up. (The setUp dismisses any
+        # session-restore "Cannot find file" prompt, so we start clean.)
+        n = dialogs.dismiss_ok_popups(self.win, max_passes=2)
+        self.assertEqual(n, 0)
+
+
+class TestSaveAs(WindowsUITestBase):
+    """`dialogs.save_as` drives the Save As dialog end-to-end."""
+
+    def test_save_as_writes_to_target_path(self):
+        actions.press_path(self.win, "File:MenuItemControl",
+                           "New tab:MenuItemControl")
+        time.sleep(0.8)
+        apps.bring_to_foreground(self.win)
+        text = "save_as_test_payload"
+        actions.write_text(self.win, "Text editor:DocumentControl", text)
+        time.sleep(0.3)
+
+        target = self.tmp / "save_as_target.txt"
+        if target.exists():
+            target.unlink()
+
+        import pyautogui
+        pyautogui.hotkey("ctrl", "s")
+        dlg = dialogs.find_dialog("save", timeout=8)
+        self.assertIsNotNone(dlg)
+        dialogs.save_as(dlg, target)
+
+        # wait for the dialog to close, then verify the file
+        actions.wait_until_absent(self.win, "File name:ComboBoxControl",
+                                  timeout=10)
+        self.assertTrue(target.exists(),
+                        f"save_as did not produce {target}")
+        self.assertEqual(target.read_text().strip(), text)
+
+
+class TestWaitUntilAbsent(WindowsUITestBase):
+    def test_returns_true_after_menu_closed(self):
+        # Open File menu, confirm New tab is in tree, press Esc, assert
+        # wait_until_absent returns True quickly.
+        actions.press(self.win, "File:MenuItemControl")
+        self.assertTrue(actions.is_present(self.win,
+                                           "New tab:MenuItemControl",
+                                           timeout=2))
+        import pyautogui
+        pyautogui.press("escape")
+        t0 = time.time()
+        gone = actions.wait_until_absent(self.win,
+                                         "New tab:MenuItemControl",
+                                         timeout=3)
+        elapsed = time.time() - t0
+        self.assertTrue(gone, "wait_until_absent must detect menu close")
+        self.assertLess(elapsed, 3.0)
+
+    def test_returns_false_for_persistent_element(self):
+        # File:MenuItemControl is the menu bar's File button — always present.
+        t0 = time.time()
+        gone = actions.wait_until_absent(self.win, "File:MenuItemControl",
+                                         timeout=0.5)
+        elapsed = time.time() - t0
+        self.assertFalse(gone)
+        self.assertGreaterEqual(elapsed, 0.4,
+                                "should honour the timeout (not return early)")
 
 
 class TestAppsIsRunning(WindowsUITestBase):

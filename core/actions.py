@@ -217,6 +217,22 @@ def is_present(window, tree_id, timeout=0):
         time.sleep(config.ACTIVE_POLL_SEC)
 
 
+def wait_until_absent(window, tree_id, timeout=10.0):
+    """Inverse of `is_present`: wait until `tree_id` no longer resolves to a
+    visible element, up to `timeout` seconds.  Returns True once it's gone,
+    False on timeout.  Use this to wait for dialogs / menus to close
+    without resorting to a magic `time.sleep`."""
+    deadline = time.time() + timeout
+    while True:
+        walked = tree.walk_live(window)
+        element = tree.find(walked, tree_id)
+        if element is None or _center(element) is None:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(config.ACTIVE_POLL_SEC)
+
+
 def press_after_delay(window, tree_id, delay):
     time.sleep(delay)
     return press(window, tree_id)
