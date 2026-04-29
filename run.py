@@ -6,6 +6,29 @@ next state (or None to end the pass). `ctx` is a per-pass dict — use it
 to share state between functions (e.g. `ctx["window"]` is the Notepad
 window every later state operates on).
 
+# Addressing controls — two schemes both work via `actions.press(window, id)`
+
+The harness accepts an element identifier in either form:
+
+1. **Name-based path** — what this demo uses for Notepad's menus, since
+   Notepad's menu items have stable Names. The leaf form
+   "File:MenuItemControl" is enough; tree.find's leaf+role tier matches
+   it. The full path "Untitled - Notepad:WindowControl/.../File:MenuItemControl"
+   from the inspector also works (it's just more specific).
+
+2. **Structural id** (`struct_id`) — dotted 0-indexed position in the
+   tree, e.g. "0.2.0.0.0". Use this for apps whose controls have NO
+   useful Name / AutomationId (the inspector still emits a struct_id
+   alongside the name path; copy whichever you prefer). Struct ids
+   self-heal across drift via tree correlation: if the live tree shifts
+   (sibling inserted, parent reorganised), `find_or_heal` walks the
+   saved snapshot upward to a still-stable ancestor and descends by
+   role + bbox shape to locate the moved control.
+
+Same `actions.press(window, id)` call site, same caller code — only
+the constant changes. Mix-and-match per-control is fine; the format
+dispatcher routes by syntax.
+
 Run modes:
   python run.py            one-shot with watchdog timeout safety net
   python run.py --loop     forever-loop, watchdog respawns each iteration
@@ -28,15 +51,43 @@ NOTEPAD = "notepad.exe"
 TITLE = "Notepad"
 SAVE_PATH = Path("data/notepad_demo.txt").resolve()
 
-FILE_MENU = "File:MenuItemControl"
-VIEW_MENU = "View:MenuItemControl"
-NEW_TAB = "New tab:MenuItemControl"
-ZOOM = "Zoom:MenuItemControl"
-ZOOM_IN = "Zoom in:MenuItemControl"
-ZOOM_OUT = "Zoom out:MenuItemControl"
-CLOSE_TAB = "Close tab:MenuItemControl"
-EDITOR = "Text editor:DocumentControl"
+# ---------------------------------------------------------------------------
+# Element identifiers
+# ---------------------------------------------------------------------------
+# Each constant below is an `actions.press(window, id)` argument. For
+# each one the LEFT column is what this demo actually uses — Notepad's
+# menus have stable Names, so the leaf+role form is the most readable
+# choice. The RIGHT column shows the structural-id (`struct_id`)
+# alternative captured from the inspector for the SAME control. Either
+# form works; the dispatcher in tree.find routes by syntax.
+#
+# Capture struct_ids by running `python inspector.py`, clicking the
+# control, and copying the `struct_id:` line. Struct ids are app-
+# specific — the values commented here were captured against Win11
+# Notepad and may shift slightly with Notepad updates. The harness
+# self-heals across that drift via tree-correlation in find_or_heal.
+# ---------------------------------------------------------------------------
+FILE_MENU = "File:MenuItemControl"            # struct_id: e.g. "0.2.0.0.0"
+VIEW_MENU = "View:MenuItemControl"            # struct_id: e.g. "0.2.0.0.2"
+NEW_TAB = "New tab:MenuItemControl"           # struct_id: inside File popup
+ZOOM = "Zoom:MenuItemControl"                 # struct_id: inside View popup
+ZOOM_IN = "Zoom in:MenuItemControl"           # struct_id: inside Zoom submenu
+ZOOM_OUT = "Zoom out:MenuItemControl"         # struct_id: inside Zoom submenu
+CLOSE_TAB = "Close tab:MenuItemControl"       # struct_id: inside File popup
+EDITOR = "Text editor:DocumentControl"        # struct_id: e.g. "0.0.0"
 SAVE_DLG_FILENAME = "File name:ComboBoxControl"
+
+# Apps the watchdog terminates after killing a hung child. The list lets
+# the next `--loop` iteration start in a clean state — no leftover menu,
+# half-typed text, or modal dialog.
+#
+# To kill multiple apps, just add them — each entry is matched as a
+# case-insensitive substring against process executable names:
+#
+#     KILL_ON_TIMEOUT = ["notepad.exe", "winword.exe", "calc.exe"]
+#
+# Empty list → no cleanup (only the python child is killed).
+KILL_ON_TIMEOUT = [NOTEPAD]
 
 
 def state_open(ctx):
@@ -120,12 +171,6 @@ def state_machine():
     while state is not None:
         state = STATES[state](ctx)
     return ctx
-
-
-KILL_ON_TIMEOUT = [NOTEPAD]
-"""Apps the watchdog terminates after killing a hung child. Wipes any
-half-typed text / open menu / blocking dialog the child left behind so
-the next iteration starts in a clean state."""
 
 
 def main():
