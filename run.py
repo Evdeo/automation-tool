@@ -4,7 +4,6 @@ from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 
-import psutil
 import pyautogui
 import uiautomation as auto
 
@@ -55,13 +54,6 @@ CLOSE_TAB = "Close tab:MenuItemControl"
 EDITOR = "Text editor:DocumentControl"
 
 
-def _notepad_running():
-    for p in psutil.process_iter(["name"]):
-        if (p.info.get("name") or "").lower() == "notepad.exe":
-            return True
-    return False
-
-
 def _focus(ctx):
     apps.bring_to_foreground(ctx["window"])
 
@@ -86,7 +78,7 @@ def _dismiss_modal_popups(window, max_passes=5):
 
 
 def state_open(ctx):
-    if not _notepad_running():
+    if not apps.is_running(NOTEPAD):
         apps.open_app(NOTEPAD)
         time.sleep(2.5)
     win = apps.get_window(TITLE)

@@ -347,5 +347,63 @@ class TestInspectorRoundtrip(WindowsUITestBase):
         self.assertIn(zoomin_leaf, ids)
 
 
+class TestCheckActive(WindowsUITestBase):
+    """check_active / is_present must return booleans (not raise) for both
+    found and missing elements, and must reflect the live state."""
+
+    def test_check_active_returns_true_for_visible_enabled_button(self):
+        # The File menu top-level button is always visible and enabled.
+        self.assertTrue(actions.check_active(self.win, "File:MenuItemControl"))
+
+    def test_check_active_returns_false_for_nonexistent_id(self):
+        # No element has this id — must return False quickly, not loop.
+        t0 = time.time()
+        result = actions.check_active(self.win, "NotARealThing:ButtonControl")
+        elapsed = time.time() - t0
+        self.assertFalse(result)
+        self.assertLess(elapsed, 1.0,
+                        "check_active(timeout=0) must fail fast for missing ids")
+
+    def test_check_active_respects_timeout_for_late_arrivals(self):
+        # Open the File menu, then check that "New tab" shows up — but only
+        # if we give it a moment to render. With timeout=0 the very first
+        # walk usually catches it; with a short timeout it always does.
+        actions.press(self.win, "File:MenuItemControl")
+        self.assertTrue(actions.check_active(self.win, "New tab:MenuItemControl",
+                                             timeout=2.0))
+        # close the menu so the next test starts clean
+        import pyautogui as _p
+        _p.press("escape")
+        time.sleep(0.4)
+
+    def test_is_present_true_for_visible(self):
+        self.assertTrue(actions.is_present(self.win, "File:MenuItemControl"))
+
+    def test_is_present_false_for_missing(self):
+        self.assertFalse(actions.is_present(self.win, "NotARealThing:ButtonControl"))
+
+    def test_check_active_in_if_statement(self):
+        # Sanity: this is the user-facing pattern they asked about.
+        if actions.check_active(self.win, "File:MenuItemControl"):
+            actions.press(self.win, "File:MenuItemControl")
+            time.sleep(0.4)
+        if actions.is_present(self.win, "New tab:MenuItemControl"):
+            self.assertTrue(actions.check_active(self.win, "New tab:MenuItemControl"))
+        import pyautogui as _p
+        _p.press("escape")
+        time.sleep(0.4)
+
+
+class TestAppsIsRunning(WindowsUITestBase):
+    def test_is_running_finds_notepad(self):
+        self.assertTrue(apps.is_running("notepad.exe"))
+
+    def test_is_running_partial_match(self):
+        self.assertTrue(apps.is_running("notepad"))
+
+    def test_is_running_false_for_nonexistent(self):
+        self.assertFalse(apps.is_running("definitelynotanapp.exe"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -178,6 +178,45 @@ def press_when_active(window, tree_id, timeout=30):
         time.sleep(config.ACTIVE_POLL_SEC)
 
 
+def check_active(window, tree_id, timeout=0):
+    """Return True if `tree_id` resolves to an enabled, on-screen element
+    within `timeout` seconds; False otherwise (not present, off-screen, or
+    disabled).  Non-throwing — safe to use in `if` statements.
+
+    Default `timeout=0` is an immediate one-walk check; pass a positive
+    value to wait for the element to appear (e.g. for a button that
+    enables once a background task finishes)."""
+    deadline = time.time() + timeout
+    while True:
+        walked = tree.walk_live(window)
+        element = tree.find(walked, tree_id)
+        if element is not None and _center(element) is not None:
+            try:
+                if element.IsEnabled:
+                    return True
+            except Exception:
+                pass
+        if time.time() >= deadline:
+            return False
+        time.sleep(config.ACTIVE_POLL_SEC)
+
+
+def is_present(window, tree_id, timeout=0):
+    """Return True if `tree_id` resolves to a visible element (regardless of
+    enabled state) within `timeout` seconds.  Useful for branching on
+    "did this dialog/menu open?" without caring whether its primary
+    button is clickable yet."""
+    deadline = time.time() + timeout
+    while True:
+        walked = tree.walk_live(window)
+        element = tree.find(walked, tree_id)
+        if element is not None and _center(element) is not None:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(config.ACTIVE_POLL_SEC)
+
+
 def press_after_delay(window, tree_id, delay):
     time.sleep(delay)
     return press(window, tree_id)

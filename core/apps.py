@@ -15,6 +15,19 @@ def open_app(path_or_name):
     return subprocess.Popen(path_or_name, shell=False)
 
 
+def is_running(name):
+    """Return True if any process whose executable name contains `name`
+    (case-insensitive) is currently running."""
+    target = name.lower()
+    for p in psutil.process_iter(["name"]):
+        try:
+            if target in (p.info.get("name") or "").lower():
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return False
+
+
 def bring_to_foreground(window):
     hwnd = window.NativeWindowHandle
     if _user32.GetForegroundWindow() == hwnd:
