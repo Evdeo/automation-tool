@@ -169,6 +169,109 @@ class TestLogRoundtrip(unittest.TestCase):
         self.assertEqual([json.loads(r[1]) for r in rows],
                          [[1, 2, 3], [4, 5, 6], [7, 8, 9]])
 
+    def test_kitchen_sink_in_single_call(self):
+        """Documents that a single log call can mix every supported type.
+        Each positional arg → its own column; each gets encoded independently."""
+        try:
+            import numpy as np
+        except ImportError:
+            self.skipTest("numpy not installed")
+        db.log(
+            "trial",
+            "run_alpha",                     # str       → TEXT
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], # list      → TEXT (JSON)
+            np.array([0.1, 0.2, 0.3]),       # ndarray   → TEXT (JSON)
+            {"k": "v", "n": 42},             # dict      → TEXT (JSON)
+            (10, 20, 30),                    # tuple     → TEXT (JSON)
+            {7, 1, 5},                       # set       → TEXT (JSON sorted)
+            True,                            # bool      → INTEGER (1)
+            42,                              # int       → INTEGER
+            np.int64(100),                   # np scalar → INTEGER
+            3.14,                            # float     → REAL
+            np.float32(2.5),                 # np scalar → REAL
+            "finished",                      # str       → TEXT
+        )
+        types = self._column_types("trial")
+        self.assertEqual(
+            types,
+            ["TEXT",                         # ts
+             "TEXT", "TEXT", "TEXT", "TEXT", "TEXT", "TEXT",
+             "INTEGER", "INTEGER", "INTEGER",
+             "REAL", "REAL",
+             "TEXT"],
+        )
+        row = self._read_table("trial")[0]
+        self.assertEqual(row[1], "run_alpha")
+        self.assertEqual(json.loads(row[2]), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        self.assertEqual(json.loads(row[3]), [0.1, 0.2, 0.3])
+        self.assertEqual(json.loads(row[4]), {"k": "v", "n": 42})
+        self.assertEqual(json.loads(row[5]), [10, 20, 30])
+        self.assertEqual(json.loads(row[6]), [1, 5, 7])  # set is sorted
+        self.assertEqual(row[7], 1)                       # True → 1
+        self.assertEqual(row[8], 42)
+        self.assertEqual(row[9], 100)                     # np.int64
+        self.assertAlmostEqual(row[10], 3.14)
+        self.assertAlmostEqual(row[11], 2.5)
+        self.assertEqual(row[12], "finished")
+
+
+class TestSchemaConstraints(unittest.TestCase):
+    """Document the schema-evolution rules: column count is locked by the
+    first call; column types are SQLite type-affinity hints (so mismatched
+    types in the same column are stored, not rejected)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="db_test_schema_"))
+        self._orig_db = config.DB_PATH
+        config.DB_PATH = str(self.tmp / "test.db")
+        db._known_tables.clear()
+
+    def tearDown(self):
+        config.DB_PATH = self._orig_db
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_different_column_count_fails(self):
+        db.log("events", "a", "b", "c")
+        # Three-column schema is now locked; supplying 2 or 4 must error.
+        with self.assertRaises(sqlite3.OperationalError):
+            db.log("events", "a", "b")
+        with self.assertRaises(sqlite3.OperationalError):
+            db.log("events", "a", "b", "c", "d")
+
+    def test_mixed_types_in_same_column_position_allowed(self):
+        # SQLite uses type AFFINITY, not strict typing. A column declared
+        # INTEGER will happily store a float or a string — the value's
+        # actual type wins per-row.
+        db.log("counter", 5)         # c0 declared INTEGER
+        db.log("counter", 5.7)
+        db.log("counter", "oops")
+        conn = sqlite3.connect(config.DB_PATH)
+        try:
+            rows = conn.execute("SELECT c0, typeof(c0) FROM counter").fetchall()
+        finally:
+            conn.close()
+        # Each row keeps its native type
+        self.assertEqual(rows[0], (5, "integer"))
+        self.assertAlmostEqual(rows[1][0], 5.7)
+        self.assertEqual(rows[1][1], "real")
+        self.assertEqual(rows[2], ("oops", "text"))
+
+    def test_collection_columns_can_change_shape_per_row(self):
+        # A column declared TEXT (because the first call passed a list)
+        # still accepts strings, dicts, tuples — anything _encode handles.
+        db.log("payload", "id1", [1, 2, 3])
+        db.log("payload", "id2", "plain string")
+        db.log("payload", "id3", {"x": 1})
+        conn = sqlite3.connect(config.DB_PATH)
+        try:
+            rows = conn.execute("SELECT c0, c1 FROM payload ORDER BY rowid").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(json.loads(rows[0][1]), [1, 2, 3])
+        self.assertEqual(rows[1][1], "plain string")
+        self.assertEqual(json.loads(rows[2][1]), {"x": 1})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
