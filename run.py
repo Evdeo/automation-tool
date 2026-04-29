@@ -1,6 +1,4 @@
-"""End-to-end demo: drives Win11 Notepad through a full work cycle once,
-under a watchdog that kills the run if it hangs longer than
-`config.LOOP_TIMEOUT_MIN` minutes.
+"""End-to-end demo: drives Win11 Notepad through a full work cycle.
 
 State machine: open → new_tab → zoom_in → (5s) → zoom_out → (5s) →
 type_time → save → close. Each state function returns the name of the
@@ -8,10 +6,15 @@ next state (or None to end the pass). `ctx` is a per-pass dict — use it
 to share state between functions (e.g. `ctx["window"]` is the Notepad
 window every later state operates on).
 
-Run with:    python run.py
-For a forever-loop variant (unattended monitoring), call
-`runner.run_with_watchdog(loop)` from your own script.
+Run modes:
+  python run.py            one-shot with watchdog timeout safety net
+  python run.py --loop     forever-loop, watchdog respawns each iteration
+                           (kills + restarts if a pass exceeds
+                            config.LOOP_TIMEOUT_MIN minutes)
+
+Both modes share the same watchdog timeout — `config.LOOP_TIMEOUT_MIN`.
 """
+import argparse
 import time
 from datetime import datetime
 from pathlib import Path
@@ -116,16 +119,21 @@ def state_machine():
     return ctx
 
 
-def loop():
-    """Forever-loop the state machine. Used by callers that want
-    `runner.run_with_watchdog(loop)` semantics (unattended monitoring)."""
-    while True:
-        state_machine()
-        time.sleep(2)
-
-
 def main():
-    runner.run_once_with_watchdog(state_machine)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Run continuously: each iteration is a fresh child process "
+             "supervised by the watchdog. The watchdog kills + respawns "
+             "after every iteration (whether it exited cleanly or hit "
+             "the timeout). Stop with Ctrl+C.",
+    )
+    args = parser.parse_args()
+    if args.loop:
+        runner.run_with_watchdog(state_machine)
+    else:
+        runner.run_once_with_watchdog(state_machine)
 
 
 if __name__ == "__main__":
