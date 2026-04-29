@@ -2,7 +2,7 @@ from pathlib import Path
 
 TARGET_WINDOW_TITLE = "Untitled - Notepad"
 
-DB_PATH = r"\\share\automation\runs.db"
+DB_PATH = str(Path(__file__).parent / "data" / "runs.db")
 
 TREE_SNAPSHOT_DIR = Path(__file__).parent / "data" / "snapshots"
 
