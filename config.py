@@ -1,14 +1,16 @@
 from pathlib import Path
 
-TARGET_WINDOW_TITLE = "Untitled - Notepad"
+TARGET_WINDOW_TITLE = "Notepad"
 
-DB_PATH = r"\\share\automation\runs.db"
+DB_PATH = "data/runs.db"
 
-TREE_SNAPSHOT_DIR = Path(__file__).parent / "data" / "snapshots"
+TREE_SNAPSHOT_DIR = Path("data/snapshots")
 
 LOOP_TIMEOUT_MIN = 15
 
 DRIFT_RETRY_BACKOFF_SEC = 0.2
+
+RESOLVE_TIMEOUT_SEC = 10
 
 ACTIVE_POLL_SEC = 0.1
 

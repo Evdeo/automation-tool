@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Generated runtime artifacts — the harness writes these as it runs.
+data/runs.db
+data/snapshots/
+data/notepad_demo.txt
+data/*.png
+
+# Per-developer Claude Code session/memory files.
+.claude/

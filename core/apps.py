@@ -1,3 +1,4 @@
+import ctypes
 import subprocess
 import time
 
@@ -7,8 +8,26 @@ import uiautomation as auto
 import config
 
 
+_user32 = ctypes.windll.user32
+
+
 def open_app(path_or_name):
     return subprocess.Popen(path_or_name, shell=False)
+
+
+def bring_to_foreground(window):
+    hwnd = window.NativeWindowHandle
+    if _user32.GetForegroundWindow() == hwnd:
+        _user32.ShowWindow(hwnd, 9)  # SW_RESTORE in case it's minimized
+        return
+    # Minimize-then-restore reliably brings a window to the foreground without
+    # the SetForegroundWindow restrictions or any keyboard side-effects.
+    _user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+    time.sleep(0.05)
+    _user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    _user32.SetForegroundWindow(hwnd)
+    _user32.BringWindowToTop(hwnd)
+    time.sleep(0.3)
 
 
 def close_app(name):
