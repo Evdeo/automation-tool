@@ -75,6 +75,37 @@ class TestRunOnceWithWatchdog(unittest.TestCase):
         result = runner.run_once_with_watchdog(_quick_target)
         self.assertEqual(result[0], "exited")
 
+    def test_kill_on_timeout_runs_cleanup_after_kill(self):
+        # 0.1 minutes = 6s; _slow_target sleeps 30s -> guaranteed timeout.
+        # Pass a name that won't have any running processes — close_app
+        # returns 0, but we still expect the "closed:..." log row.
+        result = runner.run_once_with_watchdog(
+            _slow_target,
+            timeout_min=0.1,
+            kill_on_timeout=["__nonexistent_process_xyz.exe"],
+        )
+        self.assertEqual(result[0], "killed_timeout")
+        rows = self._watchdog_rows()
+        events = [r[2] for r in rows]
+        # Schema: started -> killed_timeout -> closed:<name>
+        self.assertEqual(events[0], "started")
+        self.assertEqual(events[1], "killed_timeout")
+        self.assertEqual(events[2], "closed:__nonexistent_process_xyz.exe")
+        # exitcode column for the cleanup row holds the close_app count (0)
+        self.assertEqual(rows[2][3], 0)
+
+    def test_kill_on_timeout_skipped_on_clean_exit(self):
+        # If the target exits cleanly, the cleanup hook must NOT fire.
+        result = runner.run_once_with_watchdog(
+            _quick_target,
+            timeout_min=1,
+            kill_on_timeout=["__nonexistent_process_xyz.exe"],
+        )
+        self.assertEqual(result[0], "exited")
+        rows = self._watchdog_rows()
+        events = [r[2] for r in rows]
+        self.assertEqual(events, ["started", "exited"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

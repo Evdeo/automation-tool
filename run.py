@@ -119,6 +119,12 @@ def state_machine():
     return ctx
 
 
+KILL_ON_TIMEOUT = [NOTEPAD]
+"""Apps the watchdog terminates after killing a hung child. Wipes any
+half-typed text / open menu / blocking dialog the child left behind so
+the next iteration starts in a clean state."""
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -131,9 +137,9 @@ def main():
     )
     args = parser.parse_args()
     if args.loop:
-        runner.run_with_watchdog(state_machine)
+        runner.run_with_watchdog(state_machine, kill_on_timeout=KILL_ON_TIMEOUT)
     else:
-        runner.run_once_with_watchdog(state_machine)
+        runner.run_once_with_watchdog(state_machine, kill_on_timeout=KILL_ON_TIMEOUT)
 
 
 if __name__ == "__main__":
