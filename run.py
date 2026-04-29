@@ -1,5 +1,6 @@
-"""End-to-end demo: drives Win11 Notepad through a full work cycle and
-loops under the watchdog so a hung iteration is killed and restarted.
+"""End-to-end demo: drives Win11 Notepad through a full work cycle once,
+under a watchdog that kills the run if it hangs longer than
+`config.LOOP_TIMEOUT_MIN` minutes.
 
 State machine: open → new_tab → zoom_in → (5s) → zoom_out → (5s) →
 type_time → save → close. Each state function returns the name of the
@@ -8,6 +9,8 @@ to share state between functions (e.g. `ctx["window"]` is the Notepad
 window every later state operates on).
 
 Run with:    python run.py
+For a forever-loop variant (unattended monitoring), call
+`runner.run_with_watchdog(loop)` from your own script.
 """
 import time
 from datetime import datetime
@@ -114,13 +117,15 @@ def state_machine():
 
 
 def loop():
+    """Forever-loop the state machine. Used by callers that want
+    `runner.run_with_watchdog(loop)` semantics (unattended monitoring)."""
     while True:
         state_machine()
         time.sleep(2)
 
 
 def main():
-    runner.run_with_watchdog(loop)
+    runner.run_once_with_watchdog(state_machine)
 
 
 if __name__ == "__main__":
