@@ -297,7 +297,9 @@ class TestInspectorRoundtrip(WindowsUITestBase):
         time.sleep(0.5)
         zoom_ctrl = self._find_node("Zoom", "MenuItemControl")
         self.assertIsNotNone(zoom_ctrl, "Zoom item must be in tree once View is open")
-        zoom_full = inspector._path_to(zoom_ctrl)
+        # _path_to now returns (name_path, struct_id). The roundtrip test
+        # uses the name path; struct_id is exercised separately.
+        zoom_full, _ = inspector._path_to(zoom_ctrl)
         zoom_leaf = self._leaf(zoom_full)
         self.assertEqual(zoom_leaf, "Zoom:MenuItemControl",
                          f"inspector leaf should be Zoom:MenuItemControl, got {zoom_leaf!r}")
@@ -307,7 +309,7 @@ class TestInspectorRoundtrip(WindowsUITestBase):
         time.sleep(0.5)
         zoomin_ctrl = self._find_node("Zoom in", "MenuItemControl")
         self.assertIsNotNone(zoomin_ctrl, "Zoom in must be in tree once Zoom is expanded")
-        zoomin_full = inspector._path_to(zoomin_ctrl)
+        zoomin_full, _ = inspector._path_to(zoomin_ctrl)
         zoomin_leaf = self._leaf(zoomin_full)
         self.assertEqual(zoomin_leaf, "Zoom in:MenuItemControl",
                          f"inspector leaf should be 'Zoom in:MenuItemControl', got {zoomin_leaf!r}")
@@ -493,6 +495,97 @@ class TestWaitUntilAbsent(WindowsUITestBase):
         self.assertFalse(gone)
         self.assertGreaterEqual(elapsed, 0.4,
                                 "should honour the timeout (not return early)")
+
+
+class TestStructIdLive(WindowsUITestBase):
+    """End-to-end: walk Notepad, look up a known control's struct_id from
+    the live tree, then press the same control by struct_id. Confirms the
+    new addressing scheme works on a real WinUI app."""
+
+    def test_press_by_struct_id(self):
+        # Find the File menu in the live walk and grab its struct_id.
+        walked = tree.walk_live(self.win)
+        file_node = next(
+            (n for n in walked
+             if n["name"] == "File" and n["role"] == "MenuItemControl"),
+            None,
+        )
+        self.assertIsNotNone(file_node, "File menu must be in the walk")
+        struct_id = file_node["struct_id"]
+        # struct_id should be dotted digits (e.g. "0.2.0.0.0")
+        self.assertTrue(tree._is_struct_id(struct_id),
+                        f"unexpected struct_id format: {struct_id!r}")
+
+        # Press by struct_id — auto-foreground + cursor click should
+        # happen, click should land, press row should be in the DB.
+        actions.press(self.win, struct_id)
+        time.sleep(0.6)
+
+        conn = sqlite3.connect(config.DB_PATH)
+        try:
+            ids = [r[0] for r in conn.execute(
+                "SELECT c0 FROM press ORDER BY ts DESC LIMIT 1"
+            )]
+        finally:
+            conn.close()
+        self.assertEqual(ids, [struct_id])
+
+        # Side effect check: clicking File opened the menu, so a popup
+        # subtree should now be in the live walk.
+        self.assertTrue(
+            actions.is_present(self.win, "New tab:MenuItemControl",
+                               timeout=2),
+            "File menu should have opened from struct_id press",
+        )
+        # Close the menu so teardown is clean.
+        import pyautogui
+        pyautogui.press("escape")
+        time.sleep(0.3)
+
+
+class TestAutoForeground(WindowsUITestBase):
+    """Every action ensures its window is foreground before clicking —
+    no need for the caller to call apps.bring_to_foreground."""
+
+    def test_press_brings_minimized_window_forward(self):
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = self.win.NativeWindowHandle
+        # Minimize Notepad (SW_MINIMIZE = 6).
+        user32.ShowWindow(hwnd, 6)
+        time.sleep(0.7)
+        # Precondition: window IS minimized. Use IsIconic which directly
+        # reports minimize state (more reliable than GetForegroundWindow,
+        # which can race with the OS message queue).
+        self.assertTrue(
+            bool(user32.IsIconic(hwnd)),
+            "precondition: notepad should be minimized at this point",
+        )
+
+        # press() should restore + foreground + click without any
+        # explicit bring_to_foreground call from the test.
+        actions.press(self.win, "File:MenuItemControl")
+        time.sleep(0.7)
+
+        # Postcondition 1: window is no longer minimized.
+        self.assertFalse(
+            bool(user32.IsIconic(hwnd)),
+            "press() must restore the minimized window",
+        )
+        # Postcondition 2: window is foreground.
+        self.assertEqual(
+            user32.GetForegroundWindow(), hwnd,
+            "press() must auto-foreground its window",
+        )
+        # Postcondition 3: the click landed — File menu opened.
+        self.assertTrue(
+            actions.is_present(self.win, "New tab:MenuItemControl",
+                               timeout=2),
+            "File menu should have opened",
+        )
+        import pyautogui
+        pyautogui.press("escape")
+        time.sleep(0.3)
 
 
 class TestAppsIsRunning(WindowsUITestBase):

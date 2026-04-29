@@ -43,7 +43,9 @@ def state_open(ctx):
     if not apps.is_running(NOTEPAD):
         apps.open_app(NOTEPAD)
     win = apps.get_window(TITLE)
-    apps.bring_to_foreground(win)
+    # No explicit bring_to_foreground here — actions / dialogs.dismiss_ok_popups
+    # do it automatically. The first auto-foreground happens inside
+    # dismiss_ok_popups below.
     dialogs.dismiss_ok_popups(win)
     ctx["window"] = win
     db.log("results", "opened", win.Name)
@@ -88,7 +90,8 @@ def state_save(ctx):
         raise RuntimeError("Save As dialog did not appear")
     dialogs.save_as(dlg, SAVE_PATH)
     actions.wait_until_absent(ctx["window"], SAVE_DLG_FILENAME, timeout=10)
-    apps.bring_to_foreground(ctx["window"])
+    # No bring_to_foreground here either — state_close's first press_path
+    # auto-foregrounds the Notepad window through actions._resolve.
     db.log("results", "saved", str(SAVE_PATH))
     return "close"
 

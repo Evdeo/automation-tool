@@ -32,6 +32,9 @@ def _top_window(ctrl):
 
 
 def _path_to(element):
+    """Returns (name_path, struct_id) — the full slash-separated
+    name+role path AND the dotted-index structural path for the
+    same element. Both are computed from the same parent-chain walk."""
     chain = []
     cur = element
     while cur is not None:
@@ -47,7 +50,9 @@ def _path_to(element):
         chain.append((cur, idx))
         cur = parent
     chain.reverse()
-    return "/".join(tree._segment(c, i) for c, i in chain)
+    name_path = "/".join(tree._segment(c, i) for c, i in chain)
+    struct_id = ".".join(str(i) for _, i in chain)
+    return name_path, struct_id
 
 
 def _on_click(x, y, button, pressed):
@@ -70,7 +75,7 @@ def _on_click(x, y, button, pressed):
             if created:
                 print(f"** baseline captured: {tree.snapshot_path(win)}")
 
-            tid = _path_to(ctrl)
+            tid, struct_id = _path_to(ctrl)
             rect = ctrl.BoundingRectangle
             cx = (rect.left + rect.right) // 2
             cy = (rect.top + rect.bottom) // 2
@@ -79,14 +84,15 @@ def _on_click(x, y, button, pressed):
             except Exception:
                 color = None
             print("-" * 60)
-            print(f"window  : {tree.snapshot_key(win)}")
-            print(f"tree_id : {tid}")
-            print(f"name    : {tree._name(ctrl)}")
-            print(f"role    : {tree._role(ctrl)}")
-            print(f"bbox    : ({rect.left},{rect.top}) -> ({rect.right},{rect.bottom})")
-            print(f"center  : ({cx},{cy})")
-            print(f"color   : {color}")
-            print(f"enabled : {ctrl.IsEnabled}")
+            print(f"window    : {tree.snapshot_key(win)}")
+            print(f"struct_id : {struct_id}")
+            print(f"tree_id   : {tid}")
+            print(f"name      : {tree._name(ctrl)}")
+            print(f"role      : {tree._role(ctrl)}")
+            print(f"bbox      : ({rect.left},{rect.top}) -> ({rect.right},{rect.bottom})")
+            print(f"center    : ({cx},{cy})")
+            print(f"color     : {color}")
+            print(f"enabled   : {ctrl.IsEnabled}")
     except Exception as e:
         print(f"inspector error: {e}")
 

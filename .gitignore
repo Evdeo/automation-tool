@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# uiautomation library writes error logs here
+@AutomationLog.txt
+
 # Generated runtime artifacts — the harness writes these as it runs.
 data/runs.db
 data/snapshots/

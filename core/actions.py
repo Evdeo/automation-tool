@@ -4,7 +4,7 @@ import time
 import pyautogui
 
 import config
-from core import db, tree
+from core import apps, db, tree
 
 
 pyautogui.FAILSAFE = False
@@ -106,9 +106,10 @@ def _center(element):
     return ((r.left + r.right) // 2, (r.top + r.bottom) // 2)
 
 
-def _check_drift(window, walked):
+def _check_drift(window, walked, snap=None):
     key = tree.snapshot_key(window)
-    snap = tree.load_snapshot(window)
+    if snap is None:
+        snap = tree.load_snapshot(window)
     if snap is None:
         if _logged_diffs.get(key) != "no_baseline":
             _logged_diffs[key] = "no_baseline"
@@ -132,14 +133,35 @@ def _check_drift(window, walked):
 
 
 def _resolve(window, tree_id):
+    # Auto-foreground: every action ensures its window is on top before
+    # clicking. Cheap (early-return when already foreground); removes
+    # the burden from user code so state functions don't have to call
+    # apps.bring_to_foreground manually before each press.
+    apps.bring_to_foreground(window)
+
+    # Snapshot is loaded once outside the retry loop — drift detection
+    # and self-healing both consume it.
+    snap = tree.load_snapshot(window)
     deadline = time.time() + config.RESOLVE_TIMEOUT_SEC
     while True:
         walked = tree.walk_live(window)
-        _check_drift(window, walked)
-        element = tree.find(walked, tree_id)
+        _check_drift(window, walked, snap)
+        element, healed = tree.find_or_heal(walked, tree_id, snap)
         if element is not None:
             center = _center(element)
             if center is not None:
+                if healed:
+                    live_struct = next(
+                        (n.get("struct_id") for n in walked
+                         if n["ctrl"] is element),
+                        None,
+                    )
+                    db.log(
+                        "healed",
+                        tree.snapshot_key(window),
+                        tree_id,
+                        live_struct,
+                    )
                 return element, center
         db.log("missing", tree.snapshot_key(window), tree_id)
         if time.time() > deadline:

@@ -14,7 +14,7 @@ from pathlib import Path
 import pyperclip
 import uiautomation as auto
 
-from core import actions, tree as tree_mod
+from core import actions, apps, tree as tree_mod
 
 
 _user32 = ctypes.windll.user32
@@ -66,6 +66,7 @@ def dismiss_ok_popups(window, max_passes=5, settle=0.6):
     NOT register on WinUI popup buttons (same root cause as the menu-item
     no-op fix; this helper used to silently do nothing on modern Notepad).
     """
+    apps.bring_to_foreground(window)
     dismissed = 0
     for _ in range(max_passes):
         walked = tree_mod.walk_live(window)
@@ -96,6 +97,7 @@ def save_as(dialog, path):
     with a specific message on each failure mode rather than silently
     saving with the auto-suggested filename.
     """
+    apps.bring_to_foreground(dialog)
     name_combo = dialog.ComboBoxControl(Name="File name:")
     if not name_combo.Exists(0, 0):
         raise RuntimeError("Save As: 'File name:' combo not found in dialog")

@@ -75,18 +75,22 @@ class TestSnapshotRoundtrip(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _walked(self):
-        # Synthesised walk data: a window with two children.
+        # Synthesised walk data: a window with two children. struct_id
+        # mirrors what walk_live would produce: root="0", children "0.0"
+        # and "0.1".
         win = FakeCtrl(name="App", role="WindowControl")
         a = FakeCtrl(name="A", role="ButtonControl")
         b = FakeCtrl(name="B", role="ButtonControl")
-        # Mimic the shape produced by _node — bbox is a list, ctrl is the live ref.
         return [
-            {"tree_id": "App:WindowControl", "name": "App", "role": "WindowControl",
+            {"tree_id": "App:WindowControl", "struct_id": "0",
+             "name": "App", "role": "WindowControl",
              "bbox": [0, 0, 100, 100], "enabled": True, "ctrl": win},
-            {"tree_id": "App:WindowControl/A:ButtonControl", "name": "A",
-             "role": "ButtonControl", "bbox": [10, 10, 30, 30], "enabled": True, "ctrl": a},
-            {"tree_id": "App:WindowControl/B:ButtonControl", "name": "B",
-             "role": "ButtonControl", "bbox": [40, 10, 60, 30], "enabled": True, "ctrl": b},
+            {"tree_id": "App:WindowControl/A:ButtonControl", "struct_id": "0.0",
+             "name": "A", "role": "ButtonControl",
+             "bbox": [10, 10, 30, 30], "enabled": True, "ctrl": a},
+            {"tree_id": "App:WindowControl/B:ButtonControl", "struct_id": "0.1",
+             "name": "B", "role": "ButtonControl",
+             "bbox": [40, 10, 60, 30], "enabled": True, "ctrl": b},
         ]
 
     def test_to_serializable_drops_ctrl(self):
@@ -214,6 +218,300 @@ class TestFind(unittest.TestCase):
         # Passing the full path matches; passing just "#3:ButtonControl" does NOT.
         self.assertIs(tree.find(walked, "Root:WindowControl/#3:ButtonControl"), self.btn)
         self.assertIsNone(tree.find(walked, "#3:ButtonControl"))
+
+
+class TestSuffixMatching(unittest.TestCase):
+    """The middle tier between full-path and leaf-only — match a tail of the
+    path. Designed for controls that have no unique name and need parent
+    context to disambiguate."""
+
+    def setUp(self):
+        # Two anonymous Save buttons in different toolbars + a named one.
+        c1 = type("C", (), {})()
+        c2 = type("C", (), {})()
+        c3 = type("C", (), {})()
+        self.unique_save = c1
+        self.toolbar_save = c2
+        self.dialog_save = c3
+        self.walked = [
+            {"tree_id": "App:WindowControl/Toolbar:ToolBarControl/#1:ButtonControl",
+             "name": "", "role": "ButtonControl", "ctrl": self.toolbar_save,
+             "bbox": [0, 0, 1, 1], "enabled": True},
+            {"tree_id": "App:WindowControl/Dialog:WindowControl/#1:ButtonControl",
+             "name": "", "role": "ButtonControl", "ctrl": self.dialog_save,
+             "bbox": [0, 0, 1, 1], "enabled": True},
+            {"tree_id": "App:WindowControl/Save Settings:ButtonControl",
+             "name": "Save Settings", "role": "ButtonControl",
+             "ctrl": self.unique_save,
+             "bbox": [0, 0, 1, 1], "enabled": True},
+        ]
+
+    def test_suffix_with_index_segment_resolves(self):
+        # Just `#1:ButtonControl` would be ambiguous (both anonymous saves
+        # are #1 of their parent). Add one parent segment of context:
+        result = tree.find(self.walked,
+                           "Toolbar:ToolBarControl/#1:ButtonControl")
+        self.assertIs(result, self.toolbar_save)
+        result = tree.find(self.walked,
+                           "Dialog:WindowControl/#1:ButtonControl")
+        self.assertIs(result, self.dialog_save)
+
+    def test_suffix_match_requires_segment_boundary(self):
+        # "ButtonControl" alone is a substring of every "...:ButtonControl"
+        # tree_id but isn't a valid suffix at a segment boundary — must NOT
+        # match. (We need a `/` before the suffix or an exact length match.)
+        result = tree.find(self.walked, "ButtonControl")
+        self.assertIsNone(result)
+
+    def test_suffix_falls_through_to_leaf_match_when_no_separator(self):
+        # No `/` in the input → suffix tier is skipped, leaf tier handles it.
+        # "Save Settings:ButtonControl" matches the named one via leaf fallback.
+        result = tree.find(self.walked, "Save Settings:ButtonControl")
+        self.assertIs(result, self.unique_save)
+
+    def test_suffix_returns_first_match_when_ambiguous(self):
+        # Just "#1:ButtonControl" with no preceding segment — falls through
+        # to leaf tier, which is disabled for index segments → None.
+        # This documents that the user must add enough context to make the
+        # suffix unique; the system won't guess.
+        self.assertIsNone(tree.find(self.walked, "#1:ButtonControl"))
+
+
+class TestStructWalk(unittest.TestCase):
+    """Verify walk_live populates struct_id on every node."""
+
+    def test_walk_live_populates_struct_id(self):
+        # FakeCtrl has to expose ControlTypeName, Name, AutomationId,
+        # ClassName, BoundingRectangle, IsEnabled, GetChildren.
+        class FakeRect:
+            def __init__(self, l, t, r, b):
+                self.left, self.top, self.right, self.bottom = l, t, r, b
+
+        class WalkCtrl:
+            def __init__(self, name="", role="WindowControl",
+                         bbox=(0, 0, 0, 0), children=()):
+                self.Name = name
+                self.AutomationId = ""
+                self.ClassName = ""
+                self.ControlTypeName = role
+                self.BoundingRectangle = FakeRect(*bbox)
+                self.IsEnabled = True
+                self._children = list(children)
+
+            def GetChildren(self):
+                return self._children
+
+        leaf = WalkCtrl(name="Leaf", role="ButtonControl", bbox=(20, 20, 30, 30))
+        mid = WalkCtrl(name="Mid", role="PaneControl",
+                       bbox=(10, 10, 100, 100), children=[leaf])
+        root = WalkCtrl(name="Root", role="WindowControl",
+                        bbox=(0, 0, 200, 200), children=[mid])
+
+        walked = tree.walk_live(root)
+        self.assertEqual(walked[0]["struct_id"], "0")
+        self.assertEqual(walked[1]["struct_id"], "0.0")
+        self.assertEqual(walked[2]["struct_id"], "0.0.0")
+
+
+class TestFindDispatch(unittest.TestCase):
+    """find() routes to struct logic for dotted-int inputs, name logic
+    for everything else."""
+
+    def setUp(self):
+        ctrl = type("C", (), {})()
+        self.target = ctrl
+        self.walked = [
+            {"tree_id": "App:WindowControl", "struct_id": "0",
+             "name": "App", "role": "WindowControl",
+             "ctrl": object(), "bbox": [0, 0, 1, 1], "enabled": True},
+            {"tree_id": "App:WindowControl/Btn:ButtonControl", "struct_id": "0.0",
+             "name": "Btn", "role": "ButtonControl",
+             "ctrl": ctrl, "bbox": [0, 0, 1, 1], "enabled": True},
+        ]
+
+    def test_struct_format_routes_to_struct_lookup(self):
+        # "0.0" is a struct_id — find should match by struct_id, not name.
+        self.assertIs(tree.find(self.walked, "0.0"), self.target)
+
+    def test_name_format_routes_to_name_lookup(self):
+        # "Btn:ButtonControl" goes through the name-based tiers.
+        self.assertIs(tree.find(self.walked, "Btn:ButtonControl"), self.target)
+
+    def test_struct_miss_returns_none(self):
+        self.assertIsNone(tree.find(self.walked, "0.99"))
+
+    def test_is_struct_id_helper(self):
+        self.assertTrue(tree._is_struct_id("0"))
+        self.assertTrue(tree._is_struct_id("0.1"))
+        self.assertTrue(tree._is_struct_id("12.345.6.7"))
+        self.assertFalse(tree._is_struct_id(""))
+        self.assertFalse(tree._is_struct_id("0."))
+        self.assertFalse(tree._is_struct_id(".0"))
+        self.assertFalse(tree._is_struct_id("Save:ButtonControl"))
+        self.assertFalse(tree._is_struct_id("0.1a"))
+
+
+class TestStructHeal(unittest.TestCase):
+    """Self-healing for struct_ids — the core feature for apps whose
+    controls have no useful Name. Names are never consulted in heal;
+    correlation is by role + bbox shape + sibling position."""
+
+    def _node(self, struct_id, role, bbox, name="", ctrl=None):
+        return {
+            "tree_id": f"#{struct_id}:{role}",
+            "struct_id": struct_id,
+            "name": name,
+            "role": role,
+            "bbox": list(bbox),
+            "enabled": True,
+            "ctrl": ctrl if ctrl is not None else object(),
+        }
+
+    def test_struct_heal_inserted_sibling(self):
+        # Snapshot: target at 0.1.2 (a Button), siblings 0.1.0/0.1.1 are
+        # smaller buttons. Live: a Separator was inserted at index 2, so
+        # the original target moved to 0.1.3. Heal triggers because the
+        # node now sitting at 0.1.2 has the wrong role.
+        snap = [
+            self._node("0", "WindowControl", (0, 0, 1000, 800)),
+            self._node("0.0", "PaneControl", (0, 0, 1000, 50)),
+            self._node("0.1", "PaneControl", (0, 50, 1000, 800)),
+            self._node("0.1.0", "ButtonControl", (10, 60, 40, 90)),   # 30x30
+            self._node("0.1.1", "ButtonControl", (50, 60, 80, 90)),   # 30x30
+            self._node("0.1.2", "ButtonControl", (90, 60, 180, 90)),  # 90x30 TARGET
+        ]
+        target_ctrl = object()
+        live = [
+            self._node("0", "WindowControl", (0, 0, 1000, 800)),
+            self._node("0.0", "PaneControl", (0, 0, 1000, 50)),
+            self._node("0.1", "PaneControl", (0, 50, 1000, 800)),
+            self._node("0.1.0", "ButtonControl", (10, 60, 40, 90)),
+            self._node("0.1.1", "ButtonControl", (50, 60, 80, 90)),
+            # NEW: a separator inserted at the original index
+            self._node("0.1.2", "SeparatorControl", (88, 60, 92, 90)),
+            self._node("0.1.3", "ButtonControl", (100, 60, 190, 90),
+                       ctrl=target_ctrl),  # original target shifted right
+        ]
+        result, healed = tree.find_or_heal(live, "0.1.2", snap)
+        self.assertTrue(healed)
+        self.assertIs(result, target_ctrl)
+
+    def test_struct_heal_anonymous_throughout(self):
+        # Same drift scenario but every node has empty name. Confirms
+        # heal does NOT consult names — fingerprint is role+shape+position.
+        snap = [
+            self._node("0", "WindowControl", (0, 0, 800, 600)),
+            self._node("0.0", "ToolBarControl", (0, 0, 800, 30)),
+            self._node("0.0.0", "ButtonControl", (0, 0, 30, 30)),
+            self._node("0.0.1", "ButtonControl", (32, 0, 92, 30)),  # 60x30 TARGET
+        ]
+        target_ctrl = object()
+        live = [
+            self._node("0", "WindowControl", (0, 0, 800, 600)),
+            self._node("0.0", "ToolBarControl", (0, 0, 800, 30)),
+            self._node("0.0.0", "ButtonControl", (0, 0, 30, 30)),
+            # New separator inserted, pushing target to index 2
+            self._node("0.0.1", "SeparatorControl", (32, 0, 36, 30)),
+            self._node("0.0.2", "ButtonControl", (40, 0, 100, 30),
+                       ctrl=target_ctrl),
+        ]
+        for n in snap + live:
+            self.assertEqual(n["name"], "")
+        result, healed = tree.find_or_heal(live, "0.0.1", snap)
+        self.assertTrue(healed)
+        self.assertIs(result, target_ctrl)
+
+    def test_struct_heal_role_disambiguation_by_shape(self):
+        # When the live tree has multiple same-role children at the
+        # anchor's child level, heal tie-breaks by bbox shape. Set up
+        # the scenario where the target struct_id no longer exists
+        # (shifted by an insertion at the parent level).
+        snap = [
+            self._node("0", "WindowControl", (0, 0, 800, 600)),
+            self._node("0.0", "PaneControl", (0, 0, 800, 600)),
+            self._node("0.0.0", "ButtonControl", (0, 0, 100, 30)),  # 100x30 TARGET
+        ]
+        target_ctrl = object()
+        # Live: parent reorganised so 0.0 is now a different role
+        # (forces heal). Target moved to under a new pane at 0.1.
+        live = [
+            self._node("0", "WindowControl", (0, 0, 800, 600)),
+            self._node("0.0", "ToolBarControl", (0, 0, 800, 30)),  # role changed
+            self._node("0.1", "PaneControl", (0, 30, 800, 600)),   # was 0.0
+            # A small narrow button + the wide one matching target shape
+            self._node("0.1.0", "ButtonControl", (0, 30, 30, 60)),  # 30x30
+            self._node("0.1.1", "ButtonControl", (40, 30, 140, 60),
+                       ctrl=target_ctrl),  # 100x30
+        ]
+        result, healed = tree.find_or_heal(live, "0.0.0", snap)
+        self.assertTrue(healed)
+        # Both live buttons have the right role; the wide one (100x30)
+        # is closer to the snap target's shape than the narrow one (30x30).
+        self.assertIs(result, target_ctrl)
+
+    def test_struct_heal_total_miss(self):
+        snap = [
+            self._node("0", "WindowControl", (0, 0, 100, 100)),
+            self._node("0.0", "ButtonControl", (0, 0, 50, 30)),
+        ]
+        # Live has no buttons under the root at all — heal must give up.
+        live = [
+            self._node("0", "WindowControl", (0, 0, 100, 100)),
+            self._node("0.0", "PaneControl", (0, 0, 50, 30)),
+        ]
+        result, healed = tree.find_or_heal(live, "0.0", snap)
+        self.assertFalse(healed)
+        self.assertIsNone(result)
+
+    def test_struct_exact_match_no_heal(self):
+        # When the live tree still has the exact struct_id with matching
+        # role, heal should NOT be invoked (healed=False).
+        target = object()
+        snap = [
+            self._node("0", "WindowControl", (0, 0, 100, 100)),
+            self._node("0.0", "ButtonControl", (0, 0, 50, 30)),
+        ]
+        live = [
+            self._node("0", "WindowControl", (0, 0, 100, 100)),
+            self._node("0.0", "ButtonControl", (0, 0, 50, 30), ctrl=target),
+        ]
+        result, healed = tree.find_or_heal(live, "0.0", snap)
+        self.assertFalse(healed)
+        self.assertIs(result, target)
+
+
+class TestSnapshotBackcompat(unittest.TestCase):
+    """Snapshots saved before struct_id was added must still work — the
+    field is derived on load."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="snap_legacy_"))
+        self._orig_dir = config.TREE_SNAPSHOT_DIR
+        config.TREE_SNAPSHOT_DIR = self.tmp
+
+    def tearDown(self):
+        config.TREE_SNAPSHOT_DIR = self._orig_dir
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_load_derives_struct_id_when_absent(self):
+        # Hand-write a legacy snapshot file with no struct_id field.
+        legacy = [
+            {"tree_id": "App:WindowControl", "name": "App",
+             "role": "WindowControl", "bbox": [0, 0, 100, 100], "enabled": True},
+            {"tree_id": "App:WindowControl/A:ButtonControl", "name": "A",
+             "role": "ButtonControl", "bbox": [0, 0, 1, 1], "enabled": True},
+            {"tree_id": "App:WindowControl/B:ButtonControl", "name": "B",
+             "role": "ButtonControl", "bbox": [0, 0, 1, 1], "enabled": True},
+        ]
+        win = FakeCtrl(name="App", role="WindowControl")
+        path = tree.snapshot_path(win)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(legacy))
+
+        loaded = tree.load_snapshot(win)
+        self.assertEqual(loaded[0]["struct_id"], "0")
+        self.assertEqual(loaded[1]["struct_id"], "0.0")
+        self.assertEqual(loaded[2]["struct_id"], "0.1")
 
 
 if __name__ == "__main__":
