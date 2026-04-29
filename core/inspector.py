@@ -1,3 +1,14 @@
+# When this file is invoked directly (`python core/inspector.py`) it isn't
+# imported as part of the `core` package, so `from core import tree` would
+# fail. Detect that case and prepend the project root to sys.path so the
+# package-relative imports below resolve. Has no effect when imported
+# normally (as `core.inspector`) or via the project-root entrypoint
+# (`inspector.py`).
+if __name__ == "__main__" and __package__ is None:
+    import pathlib
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
 import pyautogui
 import uiautomation as auto
 from pynput import mouse
