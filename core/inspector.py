@@ -104,7 +104,11 @@ def _path_to(win, x, y):
     """
     chain = [(win, 0)]
     cur = win
-    while True:
+    # Guard against pathological trees where a child's bbox keeps
+    # containing the click point at every level forever (proxy
+    # cycles, faulty providers). Real UI trees are well under 50
+    # deep; 100 is a generous ceiling that still bounds runtime.
+    for _ in range(100):
         try:
             children = cur.GetChildren()
         except Exception:
@@ -227,6 +231,13 @@ def _worker():
     # and keeps the apartment alive for the program's lifetime, so
     # uiautomation's IUIAutomation singleton stays valid across all
     # clicks. See module-level comment.
+    #
+    # The inner try/except is the survival barrier: if any exception
+    # ever escapes _inspect_with_retry (it shouldn't, but UIA
+    # surprises happen), the worker keeps running so the inspector
+    # stays responsive. Without this, one freak failure would kill
+    # the worker silently and every subsequent click would be a
+    # no-op while the listener appeared to still be running.
     with auto.UIAutomationInitializerInThread(debug=False):
         # Force singleton creation on THIS thread (not on whatever
         # thread happens to make the first UIA call later).
@@ -235,7 +246,11 @@ def _worker():
             item = _clicks.get()
             if item is None:
                 return
-            _inspect_with_retry(*item)
+            try:
+                _inspect_with_retry(*item)
+            except Exception as e:
+                print(f"inspector worker recovered from: "
+                      f"{type(e).__name__}: {e}")
 
 
 def _on_click(x, y, button, pressed):
