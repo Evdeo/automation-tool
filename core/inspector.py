@@ -168,8 +168,14 @@ def _inspect(x, y):
         enabled = leaf.IsEnabled
     except Exception:
         enabled = "?"
+    # `window` shows the actual top-level window you clicked into;
+    # `snapshot` is the (stable, config-keyed) file the snapshot
+    # is read/written under. They diverge when TARGET_WINDOW_TITLE
+    # is a substring of the live title (or matches a different
+    # window entirely), which is fine -- but you want to see both.
     print("-" * 60)
-    print(f"window    : {tree.snapshot_key(win)}")
+    print(f"window    : {tree._segment(win, 0)}")
+    print(f"snapshot  : {tree.snapshot_key(win)}")
     print(f"struct_id : {struct_id}")
     print(f"tree_id   : {tid}")
     print(f"name      : {tree._name(leaf)}")
