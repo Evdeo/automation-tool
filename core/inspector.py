@@ -46,7 +46,13 @@ _captures = []
 
 
 def _emit(line):
-    print(line)
+    # Some Windows terminals are cp1252; window titles often contain
+    # characters that don't encode there (VS Code's "●", emoji, em-dash).
+    # The file is opened utf-8 — print falls back to ascii on miss.
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        print(line.encode("ascii", "replace").decode("ascii"))
     if _log_file is not None:
         _log_file.write(line + "\n")
         _log_file.flush()
@@ -376,7 +382,7 @@ def run(scope=None):
         print("Will lock to the first clicked window's process; "
               "later clicks elsewhere are ignored.")
     print(f"Session log: {_LOG_PATH}")
-    with open(_LOG_PATH, "w") as f:
+    with open(_LOG_PATH, "w", encoding="utf-8") as f:
         _log_file = f
         threading.Thread(target=_worker, daemon=True).start()
         try:
