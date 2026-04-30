@@ -76,40 +76,120 @@ def _top_window(ctrl):
         cur = parent
 
 
-def _path_to(element):
-    """Returns (name_path, struct_id) — the full slash-separated
-    name+role path AND the dotted-index structural path for the
-    same element. Both are computed from the same parent-chain walk.
+def _runtime_id(ctrl):
+    try:
+        rid = ctrl.GetRuntimeId()
+        return tuple(rid) if rid else None
+    except Exception:
+        return None
 
-    Sibling index uses `auto.ControlsAreSame` — which calls
-    `IUIAutomation::CompareElements` — to identify the clicked
-    element among `parent.GetChildren()`. Plain `==` compares Python
-    object identity (uiautomation.Control has no `__eq__`) and almost
-    never matches across freshly-instantiated wrappers, so two
-    distinct children would otherwise both fall through to
-    `idx == len(children)` and collapse onto the same path.
-    `GetPreviousSiblingControl` would also work in theory, but it
-    walks the RawViewWalker which on some WPF providers doesn't
-    expose the element returned by `ElementFromPoint` as a sibling
-    of itself — children of one parent both report no previous
-    sibling and produce idx 0.
+
+def _same_element(a, b, a_rid=None):
+    """Best-effort comparison of two Control wrappers. uiautomation
+    Control has no __eq__, so we layer three strategies:
+
+    1. RuntimeId equality — usually unique across the desktop and
+       cheap to compute.
+    2. IUIAutomation::CompareElements via ControlsAreSame — the
+       canonical UIA comparison.
+    3. Fall back to bounding-rect + role equality.
+
+    Any one strategy returning a positive match is enough; weird
+    providers (WPF-in-WinForms element host, custom UIA bridges)
+    misbehave with one approach but not all three.
     """
-    chain = []
-    cur = element
-    while cur is not None:
-        parent = cur.GetParentControl()
-        if parent is None:
-            chain.append((cur, 0))
+    if a_rid is None:
+        a_rid = _runtime_id(a)
+    b_rid = _runtime_id(b)
+    if a_rid and b_rid and a_rid == b_rid:
+        return True
+    try:
+        if auto.ControlsAreSame(a, b):
+            return True
+    except Exception:
+        pass
+    try:
+        ra, rb = a.BoundingRectangle, b.BoundingRectangle
+        if (a.ControlType == b.ControlType
+                and ra.left == rb.left and ra.top == rb.top
+                and ra.right == rb.right and ra.bottom == rb.bottom
+                and (ra.right - ra.left) > 0):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _path_to(element, win):
+    """Returns (name_path, struct_id) for `element` within `win`'s
+    tree.
+
+    Strategy: walk `win` top-down with the same logic as
+    `tree.walk_live` (so the resulting struct_id is identical to
+    what the snapshot recorded), and at each level pick the child
+    that *is* — or contains — the clicked element. This sidesteps
+    every flaky bottom-up case we hit before:
+
+      * `cur.GetParentControl()` returning a parent whose
+        `GetChildren()` doesn't list `cur`,
+      * `auto.ControlsAreSame` returning False for elements that
+        really are the same (broken WPF UIA providers),
+      * RawViewWalker not exposing the element returned by
+        `ElementFromPoint` as a sibling.
+
+    The descent prefers an exact element match; when no child is
+    *the* element, it follows the child whose bounding rectangle
+    contains the click point. The deepest reachable match wins —
+    so two distinct sibling controls always end up at distinct
+    struct_ids, even when their parents lie about who their
+    children are.
+    """
+    target_rid = _runtime_id(element)
+    target_rect = element.BoundingRectangle
+    px = (target_rect.left + target_rect.right) // 2
+    py = (target_rect.top + target_rect.bottom) // 2
+
+    chain = [(win, 0)]
+    cur = win
+    while True:
+        children = cur.GetChildren()
+        if not children:
             break
-        children = parent.GetChildren()
-        idx = len(children)  # past-the-end if nothing matches
-        for i, sib in enumerate(children):
-            if auto.ControlsAreSame(sib, cur):
-                idx = i
+        # Prefer an exact element match.
+        match_idx = -1
+        for i, child in enumerate(children):
+            if _same_element(child, element, a_rid=None):
+                match_idx = i
                 break
-        chain.append((cur, idx))
-        cur = parent
-    chain.reverse()
+        if match_idx >= 0:
+            chain.append((children[match_idx], match_idx))
+            cur = children[match_idx]
+            # Element found — but maybe it has children too. UIA
+            # leaves are usually controls without children, so we
+            # stop. (If the matched child *also* contains the
+            # click, descending further would just find the same
+            # element again.)
+            if _runtime_id(cur) == target_rid:
+                break
+            continue
+        # No exact match at this level. Descend by bbox containment.
+        contains_idx = -1
+        contains_area = None
+        for i, child in enumerate(children):
+            try:
+                r = child.BoundingRectangle
+            except Exception:
+                continue
+            if r.left <= px <= r.right and r.top <= py <= r.bottom:
+                area = max(0, r.right - r.left) * max(0, r.bottom - r.top)
+                if contains_area is None or area < contains_area:
+                    contains_idx = i
+                    contains_area = area
+        if contains_idx < 0:
+            break
+        chain.append((children[contains_idx], contains_idx))
+        cur = children[contains_idx]
+
     name_path = "/".join(tree._segment(c, i) for c, i in chain)
     struct_id = ".".join(str(i) for _, i in chain)
     return name_path, struct_id
@@ -143,7 +223,7 @@ def _inspect(x, y, click_id):
     if created:
         print(f"** baseline captured: {tree.snapshot_path(win)}")
 
-    tid, struct_id = _step("_path_to", _path_to, ctrl)
+    tid, struct_id = _step("_path_to", _path_to, ctrl, win)
     rect = _step("BoundingRectangle", lambda: ctrl.BoundingRectangle)
     cx = (rect.left + rect.right) // 2
     cy = (rect.top + rect.bottom) // 2
@@ -161,6 +241,43 @@ def _inspect(x, y, click_id):
     print(f"center    : ({cx},{cy})")
     print(f"color     : {color}")
     print(f"enabled   : {ctrl.IsEnabled}")
+
+
+# HRESULTs that mean "the target server is busy / dispatching input;
+# try again in a moment". UIAutomation calls into the WPF app cross-
+# process; while the app's UI thread is in the middle of dispatching
+# its own click (e.g., opening a menu), it can't service incoming
+# COM calls and the request bounces back. These are transient — a
+# short backoff usually clears them.
+_TRANSIENT_HRESULTS = {
+    "RPC_E_CANTCALLOUT_ININPUTSYNCCALL",
+    "RPC_E_CALL_REJECTED",
+    "RPC_E_SERVERCALL_RETRYLATER",
+}
+
+
+def _inspect_with_retry(x, y, click_id, max_attempts=8):
+    delay = 0.05  # 50ms, doubling up to ~3.2s total over 8 attempts
+    for attempt in range(1, max_attempts + 1):
+        try:
+            _inspect(x, y, click_id)
+            if attempt > 1:
+                print(f"[click #{click_id}] succeeded on attempt {attempt}")
+            return
+        except Exception as e:
+            hres = _hresult_name(e)
+            transient = hres in _TRANSIENT_HRESULTS
+            tag = f" [{hres}]" if hres else ""
+            if not transient or attempt == max_attempts:
+                print(f"[click #{click_id}] inspector error{tag} "
+                      f"(attempt {attempt}/{max_attempts}): "
+                      f"{type(e).__name__}: {e}")
+                traceback.print_exc()
+                return
+            print(f"[click #{click_id}] transient{tag} on attempt "
+                  f"{attempt}; backing off {delay*1000:.0f} ms")
+            time.sleep(delay)
+            delay *= 2
 
 
 def _worker():
@@ -184,32 +301,7 @@ def _worker():
             x, y, t_enq = item
             latency = (time.perf_counter() - t_enq) * 1000
             print(f"[click #{click_id}] dequeued after {latency:.1f} ms")
-            try:
-                _inspect(x, y, click_id)
-            except Exception as e:
-                hres = _hresult_name(e)
-                tag = f" [{hres}]" if hres else ""
-                print(f"[click #{click_id}] inspector error{tag}: "
-                      f"{type(e).__name__}: {e}")
-                traceback.print_exc()
-                if hres == "RPC_E_CANTCALLOUT_ININPUTSYNCCALL":
-                    # If this fires from our long-lived MTA-or-STA worker,
-                    # the input-sync state must be on the *target* app's
-                    # UI thread (the WPF app dispatching its own click).
-                    # Probe by retrying after a short backoff: if it now
-                    # succeeds, we've identified the cause and can build
-                    # in retry. If it still fails, the cause is on our
-                    # side and the worker apartment isn't actually clean.
-                    print(f"[click #{click_id}] retry probe in 250 ms…")
-                    time.sleep(0.25)
-                    try:
-                        _inspect(x, y, click_id)
-                        print(f"[click #{click_id}] retry SUCCEEDED — "
-                              "input-sync was in the target app, not us")
-                    except Exception as e2:
-                        hres2 = _hresult_name(e2)
-                        print(f"[click #{click_id}] retry also failed "
-                              f"[{hres2 or '?'}]: {e2}")
+            _inspect_with_retry(x, y, click_id)
 
 
 def _on_click(x, y, button, pressed):
