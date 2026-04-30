@@ -13,11 +13,29 @@ import queue
 import threading
 import time
 import traceback
+from pathlib import Path
 
 import uiautomation as auto
 from pynput import mouse
 
 from core import tree
+
+
+# Per-session log of the paste-ready blocks. Truncated on startup
+# so the file only contains the current run -- the user grabs the
+# struct_ids they want at the end without scrolling past stale
+# state. Errors / baseline notes are deliberately NOT written to
+# this file; only the lines you'd actually paste into run.py.
+_LOG_PATH = Path("data/inspector.txt")
+_log_file = None
+
+
+def _emit(line):
+    """Print to stdout AND append to the session log."""
+    print(line)
+    if _log_file is not None:
+        _log_file.write(line + "\n")
+        _log_file.flush()
 
 
 # Decoded HRESULTs we surface explicitly so the message tells the
@@ -150,10 +168,12 @@ def _inspect(x, y):
     # Two paste-ready strings: the window title for apps.get_window(TITLE)
     # at the top of run.py, and the struct_id for the constant assignment
     # the user names themselves (e.g. `scan = "0.14.2"`). Everything else
-    # the inspector used to print is noise for that workflow.
-    print("-" * 60)
-    print(f'window    : "{tree._name(win)}"')
-    print(f'struct_id : "{struct_id}"')
+    # the inspector used to print is noise for that workflow. Mirrored
+    # to data/inspector.txt so the user can grab the day's clicks
+    # in one paste at the end.
+    _emit("-" * 60)
+    _emit(f'window    : "{tree._name(win)}"')
+    _emit(f'struct_id : "{struct_id}"')
 
 
 # HRESULTs that mean "the target server is busy / dispatching input;
@@ -236,11 +256,19 @@ def _on_click(x, y, button, pressed):
 
 
 def run():
+    global _log_file
+    _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     print("Inspector running. Left-click any element. Ctrl+C to quit.")
     print("Baselines auto-saved on first click in each window.")
-    threading.Thread(target=_worker, daemon=True).start()
-    with mouse.Listener(on_click=_on_click) as listener:
-        listener.join()
+    print(f"Session log: {_LOG_PATH}")
+    with open(_LOG_PATH, "w") as f:
+        _log_file = f
+        threading.Thread(target=_worker, daemon=True).start()
+        try:
+            with mouse.Listener(on_click=_on_click) as listener:
+                listener.join()
+        finally:
+            _log_file = None
 
 
 if __name__ == "__main__":
