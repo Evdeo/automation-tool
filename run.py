@@ -44,12 +44,21 @@ from pathlib import Path
 
 import pyautogui
 
+import config
 from core import actions, apps, db, dialogs, runner
 
 
 NOTEPAD = "notepad.exe"
 TITLE = "Notepad"
-SAVE_PATH = Path("data/notepad_demo.txt").resolve()
+# Per-run output: a fresh timestamped folder under config.RESULTS_DIR,
+# with the generic filename. Computed once at import so a single state
+# machine pass writes into one folder; the --loop mode respawns the
+# python process per iteration, so each iteration gets its own stamp.
+SAVE_PATH = (
+    config.RESULTS_DIR
+    / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    / config.RESULT_FILENAME
+).resolve()
 
 # Pre-flight inventory: (launch path, window-title substring) for every
 # app this script depends on. apps.verify_installed() runs through this
