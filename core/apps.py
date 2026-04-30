@@ -1,6 +1,8 @@
 import ctypes
+import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import psutil
 import uiautomation as auto
@@ -13,6 +15,33 @@ _user32 = ctypes.windll.user32
 
 def open_app(path_or_name):
     return subprocess.Popen(path_or_name, shell=False)
+
+
+def verify_installed(required):
+    """Pre-flight: confirm every (path, title) entry's launch path is
+    reachable. Resolved via shutil.which for bare names (PATH lookup
+    handles things like "notepad.exe" -> System32) and Path.exists for
+    anything that looks like a directory path. Collects ALL misses
+    into one error so the user fixes them in a single edit instead of
+    one-at-a-time. Title is unused here -- it can only be verified
+    when the app is actually running, which get_window() handles."""
+    missing = []
+    for path, _title in required:
+        p = Path(path)
+        # Treat anything with a separator OR drive letter as a literal
+        # filesystem path; bare names (e.g. "notepad.exe") fall through
+        # to PATH resolution.
+        if p.is_absolute() or "/" in path or "\\" in path:
+            if not p.exists():
+                missing.append(path)
+        elif shutil.which(path) is None:
+            missing.append(path)
+    if missing:
+        bullets = "\n  - ".join(missing)
+        raise FileNotFoundError(
+            "Required apps not found:\n  - " + bullets +
+            "\nFix the paths in REQUIRED_APPS."
+        )
 
 
 def is_running(name):

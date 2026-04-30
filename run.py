@@ -51,6 +51,16 @@ NOTEPAD = "notepad.exe"
 TITLE = "Notepad"
 SAVE_PATH = Path("data/notepad_demo.txt").resolve()
 
+# Pre-flight inventory: (launch path, window-title substring) for every
+# app this script depends on. apps.verify_installed() runs through this
+# at startup and raises a single error listing any missing paths -- so
+# you fix them all in one edit instead of crashing mid-run on the first
+# subprocess.Popen. For installed software the launch path is usually
+# a full path, e.g. r"C:\Program Files\ValSuite\ValSuitePro.exe".
+REQUIRED_APPS = [
+    (NOTEPAD, TITLE),
+]
+
 # ---------------------------------------------------------------------------
 # Element identifiers
 # ---------------------------------------------------------------------------
@@ -184,6 +194,7 @@ def main():
              "the timeout). Stop with Ctrl+C.",
     )
     args = parser.parse_args()
+    apps.verify_installed(REQUIRED_APPS)
     if args.loop:
         runner.run_with_watchdog(state_machine, kill_on_timeout=KILL_ON_TIMEOUT)
     else:
