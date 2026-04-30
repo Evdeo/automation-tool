@@ -29,6 +29,9 @@ _HRESULTS = {
     -2147417835: "RPC_E_SERVERCALL_RETRYLATER",         # 0x8001010A
     -2147023174: "RPC_S_SERVER_UNAVAILABLE",            # 0x800706BA
     -2147221008: "CO_E_NOTINITIALIZED",                 # 0x800401F0
+    -2147220991: "EVENT_E_INTERNALEXCEPTION",           # 0x80040201
+    -2146233083: "COR_E_TIMEOUT",                       # 0x80131505
+    -2147220984: "UIA_E_ELEMENTNOTAVAILABLE",           # 0x80040208
 }
 
 
@@ -76,123 +79,57 @@ def _top_window(ctrl):
         cur = parent
 
 
-def _runtime_id(ctrl):
-    try:
-        rid = ctrl.GetRuntimeId()
-        return tuple(rid) if rid else None
-    except Exception:
-        return None
+def _path_to(win, x, y):
+    """Walk `win` top-down to the deepest descendant whose bounding
+    rectangle contains the click point (x, y), using only one
+    BoundingRectangle COM call per child per level.
 
+    Returns (leaf_ctrl, name_path, struct_id). The struct_id is
+    identical to what `tree.walk_live` records in the snapshot,
+    because the descent uses the same enumeration order. `leaf_ctrl`
+    is the same control the inspection should report on — using it
+    instead of the original `ControlFromPoint` result avoids a
+    second flaky cross-process query for properties like
+    `BoundingRectangle`, which sometimes fails on the leaf returned
+    by `ElementFromPoint` while succeeding on the bbox-descended
+    leaf (they're often the same element accessed via different
+    paths through the UIA tree).
 
-def _same_element(a, b, a_rid=None):
-    """Best-effort comparison of two Control wrappers. uiautomation
-    Control has no __eq__, so we layer three strategies:
-
-    1. RuntimeId equality — usually unique across the desktop and
-       cheap to compute.
-    2. IUIAutomation::CompareElements via ControlsAreSame — the
-       canonical UIA comparison.
-    3. Fall back to bounding-rect + role equality.
-
-    Any one strategy returning a positive match is enough; weird
-    providers (WPF-in-WinForms element host, custom UIA bridges)
-    misbehave with one approach but not all three.
+    Element-comparison strategies (RuntimeId, ControlsAreSame) are
+    deliberately *not* used here — they cost 2-3 extra COM calls
+    per child per level, blowing _path_to runtime out to seconds on
+    wide trees. Bbox-containment with smallest-area tie-break
+    converges on the same leaf that `ElementFromPoint` would have
+    returned, much faster.
     """
-    if a_rid is None:
-        a_rid = _runtime_id(a)
-    b_rid = _runtime_id(b)
-    if a_rid and b_rid and a_rid == b_rid:
-        return True
-    try:
-        if auto.ControlsAreSame(a, b):
-            return True
-    except Exception:
-        pass
-    try:
-        ra, rb = a.BoundingRectangle, b.BoundingRectangle
-        if (a.ControlType == b.ControlType
-                and ra.left == rb.left and ra.top == rb.top
-                and ra.right == rb.right and ra.bottom == rb.bottom
-                and (ra.right - ra.left) > 0):
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _path_to(element, win):
-    """Returns (name_path, struct_id) for `element` within `win`'s
-    tree.
-
-    Strategy: walk `win` top-down with the same logic as
-    `tree.walk_live` (so the resulting struct_id is identical to
-    what the snapshot recorded), and at each level pick the child
-    that *is* — or contains — the clicked element. This sidesteps
-    every flaky bottom-up case we hit before:
-
-      * `cur.GetParentControl()` returning a parent whose
-        `GetChildren()` doesn't list `cur`,
-      * `auto.ControlsAreSame` returning False for elements that
-        really are the same (broken WPF UIA providers),
-      * RawViewWalker not exposing the element returned by
-        `ElementFromPoint` as a sibling.
-
-    The descent prefers an exact element match; when no child is
-    *the* element, it follows the child whose bounding rectangle
-    contains the click point. The deepest reachable match wins —
-    so two distinct sibling controls always end up at distinct
-    struct_ids, even when their parents lie about who their
-    children are.
-    """
-    target_rid = _runtime_id(element)
-    target_rect = element.BoundingRectangle
-    px = (target_rect.left + target_rect.right) // 2
-    py = (target_rect.top + target_rect.bottom) // 2
-
     chain = [(win, 0)]
     cur = win
     while True:
-        children = cur.GetChildren()
+        try:
+            children = cur.GetChildren()
+        except Exception:
+            break
         if not children:
             break
-        # Prefer an exact element match.
-        match_idx = -1
-        for i, child in enumerate(children):
-            if _same_element(child, element, a_rid=None):
-                match_idx = i
-                break
-        if match_idx >= 0:
-            chain.append((children[match_idx], match_idx))
-            cur = children[match_idx]
-            # Element found — but maybe it has children too. UIA
-            # leaves are usually controls without children, so we
-            # stop. (If the matched child *also* contains the
-            # click, descending further would just find the same
-            # element again.)
-            if _runtime_id(cur) == target_rid:
-                break
-            continue
-        # No exact match at this level. Descend by bbox containment.
-        contains_idx = -1
-        contains_area = None
+        best_idx = -1
+        best_area = None
         for i, child in enumerate(children):
             try:
                 r = child.BoundingRectangle
             except Exception:
                 continue
-            if r.left <= px <= r.right and r.top <= py <= r.bottom:
+            if r.left <= x <= r.right and r.top <= y <= r.bottom:
                 area = max(0, r.right - r.left) * max(0, r.bottom - r.top)
-                if contains_area is None or area < contains_area:
-                    contains_idx = i
-                    contains_area = area
-        if contains_idx < 0:
+                if best_area is None or area < best_area:
+                    best_idx = i
+                    best_area = area
+        if best_idx < 0:
             break
-        chain.append((children[contains_idx], contains_idx))
-        cur = children[contains_idx]
-
+        chain.append((children[best_idx], best_idx))
+        cur = children[best_idx]
     name_path = "/".join(tree._segment(c, i) for c, i in chain)
     struct_id = ".".join(str(i) for _, i in chain)
-    return name_path, struct_id
+    return cur, name_path, struct_id
 
 
 def _step(label, fn, *args, **kwargs):
@@ -223,24 +160,37 @@ def _inspect(x, y, click_id):
     if created:
         print(f"** baseline captured: {tree.snapshot_path(win)}")
 
-    tid, struct_id = _step("_path_to", _path_to, ctrl, win)
-    rect = _step("BoundingRectangle", lambda: ctrl.BoundingRectangle)
-    cx = (rect.left + rect.right) // 2
-    cy = (rect.top + rect.bottom) // 2
+    leaf, tid, struct_id = _step("_path_to", _path_to, win, x, y)
+    # Report on the bbox-descended leaf, not the original ctrl from
+    # ControlFromPoint — the leaf's properties are noticeably more
+    # reliable on the WPF-in-WinForms bridge, which is the common
+    # source of EVENT_E_INTERNALEXCEPTION on `ctrl.BoundingRectangle`.
+    try:
+        rect = leaf.BoundingRectangle
+        cx = (rect.left + rect.right) // 2
+        cy = (rect.top + rect.bottom) // 2
+        bbox = f"({rect.left},{rect.top}) -> ({rect.right},{rect.bottom})"
+    except Exception as e:
+        cx, cy = x, y
+        bbox = f"unavailable ({type(e).__name__})"
     try:
         color = pyautogui.pixel(cx, cy)
     except Exception:
         color = None
+    try:
+        enabled = leaf.IsEnabled
+    except Exception:
+        enabled = "?"
     print("-" * 60)
     print(f"window    : {tree.snapshot_key(win)}")
     print(f"struct_id : {struct_id}")
     print(f"tree_id   : {tid}")
-    print(f"name      : {tree._name(ctrl)}")
-    print(f"role      : {tree._role(ctrl)}")
-    print(f"bbox      : ({rect.left},{rect.top}) -> ({rect.right},{rect.bottom})")
+    print(f"name      : {tree._name(leaf)}")
+    print(f"role      : {tree._role(leaf)}")
+    print(f"bbox      : {bbox}")
     print(f"center    : ({cx},{cy})")
     print(f"color     : {color}")
-    print(f"enabled   : {ctrl.IsEnabled}")
+    print(f"enabled   : {enabled}")
 
 
 # HRESULTs that mean "the target server is busy / dispatching input;
@@ -253,6 +203,17 @@ _TRANSIENT_HRESULTS = {
     "RPC_E_CANTCALLOUT_ININPUTSYNCCALL",
     "RPC_E_CALL_REJECTED",
     "RPC_E_SERVERCALL_RETRYLATER",
+    # The target's UIA provider was mid-update when we queried —
+    # firing property-change events that errored out. Common when
+    # a menu is animating open. Retry usually clears it.
+    "EVENT_E_INTERNALEXCEPTION",
+    # Cross-process UIA query exceeded its timeout because the
+    # target's UI thread was busy. Retrying after a short wait
+    # almost always works.
+    "COR_E_TIMEOUT",
+    # The element vanished between queries (popup closed). Retry
+    # picks up whatever's now under the cursor.
+    "UIA_E_ELEMENTNOTAVAILABLE",
 }
 
 
