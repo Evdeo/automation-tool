@@ -14,7 +14,6 @@ import threading
 import time
 import traceback
 
-import pyautogui
 import uiautomation as auto
 from pynput import mouse
 
@@ -147,43 +146,14 @@ def _inspect(x, y):
     if created:
         print(f"** baseline captured: {tree.snapshot_path(win)}")
 
-    # Report on the bbox-descended leaf, not the original ctrl from
-    # ControlFromPoint — the leaf's properties are noticeably more
-    # reliable on the WPF-in-WinForms bridge, which is the common
-    # source of EVENT_E_INTERNALEXCEPTION on `ctrl.BoundingRectangle`.
-    leaf, tid, struct_id = _path_to(win, x, y)
-    try:
-        rect = leaf.BoundingRectangle
-        cx = (rect.left + rect.right) // 2
-        cy = (rect.top + rect.bottom) // 2
-        bbox = f"({rect.left},{rect.top}) -> ({rect.right},{rect.bottom})"
-    except Exception as e:
-        cx, cy = x, y
-        bbox = f"unavailable ({type(e).__name__})"
-    try:
-        color = pyautogui.pixel(cx, cy)
-    except Exception:
-        color = None
-    try:
-        enabled = leaf.IsEnabled
-    except Exception:
-        enabled = "?"
-    # `window` shows the actual top-level window you clicked into;
-    # `snapshot` is the (stable, config-keyed) file the snapshot
-    # is read/written under. They diverge when TARGET_WINDOW_TITLE
-    # is a substring of the live title (or matches a different
-    # window entirely), which is fine -- but you want to see both.
+    _, _, struct_id = _path_to(win, x, y)
+    # Two paste-ready strings: the window title for apps.get_window(TITLE)
+    # at the top of run.py, and the struct_id for the constant assignment
+    # the user names themselves (e.g. `scan = "0.14.2"`). Everything else
+    # the inspector used to print is noise for that workflow.
     print("-" * 60)
-    print(f"window    : {tree._segment(win, 0)}")
-    print(f"snapshot  : {tree.snapshot_key(win)}")
-    print(f"struct_id : {struct_id}")
-    print(f"tree_id   : {tid}")
-    print(f"name      : {tree._name(leaf)}")
-    print(f"role      : {tree._role(leaf)}")
-    print(f"bbox      : {bbox}")
-    print(f"center    : ({cx},{cy})")
-    print(f"color     : {color}")
-    print(f"enabled   : {enabled}")
+    print(f'window    : "{tree._name(win)}"')
+    print(f'struct_id : "{struct_id}"')
 
 
 # HRESULTs that mean "the target server is busy / dispatching input;
