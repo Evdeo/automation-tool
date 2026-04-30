@@ -38,6 +38,11 @@ def double_click(window: Control, control_id: str) -> bool:
     return actions.double_press(window, control_id)
 
 
+def right_click(window: Control, control_id: str) -> bool:
+    """Right-click a control (typically opens its context menu)."""
+    return actions.right_press(window, control_id)
+
+
 def click_when_enabled(window: Control, control_id: str, timeout: float = 30) -> bool:
     """Click as soon as the control becomes enabled (e.g. a button that's
     disabled while a background task runs)."""
@@ -90,9 +95,25 @@ def check_enabled(window: Control, control_id: str, timeout: float = 0) -> bool:
     return actions.check_active(window, control_id, timeout=timeout)
 
 
+def wait_visible(window: Control, control_id: str, timeout: float = 10) -> bool:
+    """Block until the control is visible. Returns True once visible,
+    False on timeout. Use after an action that should reveal something
+    (a popup opening, a panel appearing) before the next state proceeds."""
+    return actions.is_present(window, control_id, timeout=timeout)
+
+
+def wait_enabled(window: Control, control_id: str, timeout: float = 10) -> bool:
+    """Block until the control is visible AND enabled. Returns True
+    once enabled, False on timeout. Use for buttons that stay disabled
+    while a background task runs."""
+    return actions.check_active(window, control_id, timeout=timeout)
+
+
 def wait_gone(window: Control, control_id: str, timeout: float = 10) -> bool:
-    """Wait until the control disappears. Returns True once gone, False on
-    timeout."""
+    """Block until the control disappears. Returns True once gone,
+    False on timeout. Use to wait for a popup / dialog / transient
+    element to close before proceeding — e.g. after `dismiss_popups`
+    or after a Save dialog accepts the filename and closes."""
     return actions.wait_until_absent(window, control_id, timeout=timeout)
 
 
@@ -102,6 +123,60 @@ def check_color(
     """Sample the pixel color at the control's center, optionally offset
     by `(dx, dy)`. Returns `(r, g, b)`."""
     return actions.get_color(window, control_id, x_offset=dx, y_offset=dy)
+
+
+def read_info(window: Control, control_id: str) -> dict:
+    """Return a dict of every useful UIA property of `control_id`. Read
+    by key:
+
+        info = read_info(window, BUTTON)
+        info["name"]          # str — UIA Name
+        info["value"]         # str — UIA Value (if it has ValuePattern)
+        info["role"]          # str — control type (ButtonControl, ...)
+        info["enabled"]       # bool
+        info["visible"]       # bool — bbox is non-empty
+        info["bbox"]          # (left, top, right, bottom)
+        info["bbox_center"]   # (x, y)
+        info["class_name"]    # str
+        info["automation_id"] # str
+        info["struct_id"]     # str — what you passed in
+    """
+    element, (cx, cy) = actions._resolve(window, control_id)
+    r = element.BoundingRectangle
+    visible = (r.right - r.left) > 0 and (r.bottom - r.top) > 0
+    try:
+        value = element.GetValuePattern().Value
+    except Exception:
+        value = ""
+    return {
+        "name": element.Name or "",
+        "value": value or "",
+        "role": element.ControlTypeName or "",
+        "enabled": bool(element.IsEnabled),
+        "visible": visible,
+        "bbox": (r.left, r.top, r.right, r.bottom),
+        "bbox_center": (cx, cy),
+        "class_name": element.ClassName or "",
+        "automation_id": element.AutomationId or "",
+        "struct_id": control_id,
+    }
+
+
+def each(verb, window: Control, ids, **kwargs) -> list:
+    """Apply `verb(window, id, **kwargs)` to every id in `ids` and return
+    a list of results. Generic batch helper for the check / read / wait
+    family.
+
+        each(check_visible, win, [BTN1, BTN2, BTN3])
+        # → [True, False, True]
+
+        each(check_enabled, win, [BTN1, BTN2], timeout=2)
+        # → [True, True]
+
+        each(read_info, win, BTN_IDS)
+        # → [{'name': ...}, {'name': ...}, ...]
+    """
+    return [verb(window, control_id, **kwargs) for control_id in ids]
 
 
 # --- Popups / dialogs -------------------------------------------------------

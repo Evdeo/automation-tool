@@ -11,6 +11,7 @@ from core.verbs import (
     # clicks
     click,
     double_click,
+    right_click,
     click_when_enabled,
     click_after,
     # text input
@@ -20,8 +21,12 @@ from core.verbs import (
     # checks / waits
     check_visible,
     check_enabled,
-    wait_gone,
     check_color,
+    wait_visible,
+    wait_enabled,
+    wait_gone,
+    # reads
+    read_info,
     # popups / dialogs
     popup,
     dismiss_popups,
@@ -29,6 +34,8 @@ from core.verbs import (
     save_as,
     screenshot,
     close,
+    # batch
+    each,
     # misc
     now,
     wait,
@@ -39,11 +46,14 @@ from core.verbs import (
 
 
 __all__ = [
-    "click", "double_click", "click_when_enabled", "click_after",
+    "click", "double_click", "right_click", "click_when_enabled", "click_after",
     "fill", "type", "hotkey",
-    "check_visible", "check_enabled", "wait_gone", "check_color",
+    "check_visible", "check_enabled", "check_color",
+    "wait_visible", "wait_enabled", "wait_gone",
+    "read_info",
     "popup", "dismiss_popups",
     "save_as", "screenshot", "close",
+    "each",
     "now", "wait", "log", "read_clipboard", "log_csv",
     "runner",
 ]

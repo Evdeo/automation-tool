@@ -96,6 +96,17 @@ def _cursor_double_click(x, y, settle=0.15, hold=0.05, gap=0.08):
         time.sleep(gap)
 
 
+def _cursor_right_click(x, y, settle=0.15, hold=0.05):
+    """Move the cursor to (x, y) and issue a right click via SendInput.
+    Mirrors `_cursor_click` with the RIGHTDOWN / RIGHTUP flags."""
+    ax, ay = _abs_coords(x, y)
+    _send_inputs(_make_mouse_input(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, ax, ay))
+    time.sleep(settle)
+    _send_inputs(_make_mouse_input(_MOUSEEVENTF_RIGHTDOWN))
+    time.sleep(hold)
+    _send_inputs(_make_mouse_input(_MOUSEEVENTF_RIGHTUP))
+
+
 # --- Tree resolution ----------------------------------------------------------
 
 
@@ -197,6 +208,13 @@ def double_press(window, tree_id):
     _, (x, y) = _resolve(window, tree_id)
     _cursor_double_click(x, y)
     db.log("double_press", tree_id, x, y)
+    return True
+
+
+def right_press(window, tree_id):
+    _, (x, y) = _resolve(window, tree_id)
+    _cursor_right_click(x, y)
+    db.log("right_press", tree_id, x, y)
     return True
 
 
