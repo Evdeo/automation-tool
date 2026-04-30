@@ -8,6 +8,8 @@ __pycache__/
 # Generated runtime artifacts — the harness writes these as it runs.
 data/runs.db
 data/snapshots/
+data/results/
+data/inspector.txt
 data/notepad_demo.txt
 data/*.png
 

@@ -75,7 +75,7 @@ def _run_states(states, start_state, data):
     while state is not None:
         fn = states[state]
         t0 = time.time()
-        db.log("states", state, "entered", 0.0)
+        db.log("states", state, "entered", 0.0, "")
         nxt, data = fn(data)
         dur = round(time.time() - t0, 3)
         db.log("states", state, "exited", dur, nxt or "")

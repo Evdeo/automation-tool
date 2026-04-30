@@ -42,11 +42,11 @@ APPS = {"notepad": "notepad.exe"}
 # ─── USER: controls (struct-ids from `python inspector.py notepad.exe`) ──────
 FILE_MENU = "0.2.0.0.0"
 VIEW_MENU = "0.2.0.0.2"
-NEW_TAB   = "0.2.0.0.0.0.0"
-ZOOM      = "0.2.0.0.2.0.2"
-ZOOM_IN   = "0.2.0.0.2.0.2.0.0"
-ZOOM_OUT  = "0.2.0.0.2.0.2.0.1"
-CLOSE_TAB = "0.2.0.0.0.0.5"
+NEW_TAB   = "0.0.0.0.0.0"
+ZOOM      = "0.0.0.0.0.0"
+ZOOM_IN   = "0.0.0.0.0.0"
+ZOOM_OUT  = "0.0.0.0.0.1"
+CLOSE_TAB = "0.0.0.0.0.10"
 EDITOR    = "0.0.0"
 
 
