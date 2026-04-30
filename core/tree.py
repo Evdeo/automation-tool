@@ -84,20 +84,51 @@ def to_serializable(walked):
     return [{k: v for k, v in n.items() if k != "ctrl"} for n in walked]
 
 
-def snapshot_key(window):
-    """Sanitised filename stem for `window`'s snapshot.
+def _process_name(pid):
+    """Return the executable filename (e.g. "ValSuitePro.exe") for
+    `pid`, or "" on any failure. Split out so tests can patch it
+    without involving psutil."""
+    try:
+        import psutil
+        return psutil.Process(pid).name() or ""
+    except Exception:
+        return ""
 
-    Uses `config.TARGET_WINDOW_TITLE` (a stable, user-supplied
-    substring) as the name component when it's set, falling back
-    to the live `window.Name` otherwise. The live title often
-    contains volatile fragments — instrument serial numbers, run
-    counters, document filenames — so keying off it produces a new
-    snapshot file every run and the heal/diff logic never matches
-    against an existing baseline. The configured title is the
-    promise that "this window is the same one across runs".
+
+def _process_stem(window):
+    """Return the executable stem for the process owning `window`
+    (e.g., "ValSuitePro" for "ValSuitePro.exe"), or "" on failure.
+
+    Process name is the most stable identifier for a window across
+    runs — far more so than the live title (which may embed serial
+    numbers, run counters, or document names) or the ClassName
+    (which on WPF/WinForms is salted with a per-launch hash).
     """
-    title = getattr(config, "TARGET_WINDOW_TITLE", None)
-    name = _safe(title) if title else _name(window)
+    try:
+        pid = window.ProcessId
+    except AttributeError:
+        return ""
+    if not pid:
+        return ""
+    name = _process_name(pid)
+    if "." in name:
+        name = name.rsplit(".", 1)[0]
+    return _safe(name)
+
+
+def snapshot_key(window):
+    """Auto-derived, stable filename stem for `window`'s snapshot.
+
+    Keys off the owning process's executable name when available
+    (e.g., a click anywhere in `ValSuitePro.exe` produces
+    `ValSuitePro_WindowControl`), so snapshots survive volatile
+    title fragments — instrument serials, run counters, document
+    filenames — without any manual configuration.
+
+    Falls back to the live `window.Name` only when the process
+    can't be resolved (no ProcessId, psutil unavailable, etc.).
+    """
+    name = _process_stem(window) or _name(window)
     role = _role(window)
     base = name if name else "#0"
     seg = f"{base}{_ROLE_SEP}{role}"
