@@ -21,6 +21,8 @@ focus, useful when a dialog opens with a field already selected):
     save_as(window, path)                 full Save flow in one call
     screenshot(window, path)              PNG of the window
     wait, now, log, close
+    read_clipboard()                      grab clipboard contents
+    log_csv(path, *rows, header=...)      append to a CSV file
 
 Each state function takes `data` and returns `(next_state, data)`.
 Returning `(None, data)` ends the run. Each state should perform one

@@ -4,6 +4,9 @@ Every action is a function taking the window as its first arg:
 `click(window, id)`, `fill(window, id, text)`, `save_as(window, path)`.
 Auto-complete on `from core import ...` lists everything available.
 """
+import csv as _csv
+import io as _io
+import json as _json
 import time as _time
 from datetime import datetime as _datetime
 from os import PathLike
@@ -12,6 +15,7 @@ from typing import Tuple, Union
 
 import psutil
 import pyautogui
+import pyperclip
 import uiautomation as auto
 
 from core import actions, app, apps, db, dialogs
@@ -174,3 +178,62 @@ def log(table: str, *values) -> None:
     int → INTEGER, float → REAL, str/list/dict/set → TEXT (lists & friends
     JSON-encoded). Numpy scalars/arrays supported. Table auto-created."""
     db.log(table, *values)
+
+
+def read_clipboard() -> str:
+    """Return the current clipboard contents as a string. Useful for
+    grabbing tabular data copied from Excel (TSV) or a webpage table —
+    pass the result straight to `log_csv` and it'll auto-detect the
+    delimiter."""
+    return pyperclip.paste()
+
+
+def log_csv(path: PathArg, *rows, header=None, delimiter: str = ",") -> None:
+    """Append `rows` to a CSV file. Creates parent dirs; writes `header`
+    once, only when the file is first created.
+
+    Each row is an iterable of cells. Cells of type list / tuple / set /
+    dict are JSON-encoded into a single string cell; everything else
+    (int, float, str, bool, None) is written as-is.
+
+    A single raw string is auto-parsed as CSV/TSV (tab / comma / semicolon
+    detected from the first line) — use this for clipboard pass-through:
+
+        log_csv("data/out.csv", read_clipboard(), header=["a", "b"])
+
+    Examples:
+        log_csv("data/out.csv", [1, "alpha", 3.14])                # one row
+        log_csv("data/out.csv", [1, "a"], [2, "b"], [3, "c"])      # multiple
+        log_csv("data/out.csv", row, header=["i", "name", "x"])    # with header
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    existed = p.exists()
+
+    # Single raw-string arg → treat as clipboard-style table, auto-detect
+    # delimiter from the first line.
+    if len(rows) == 1 and isinstance(rows[0], str):
+        text = rows[0]
+        first = text.splitlines()[0] if text else ""
+        if "\t" in first:
+            src_delim = "\t"
+        elif ";" in first:
+            src_delim = ";"
+        else:
+            src_delim = ","
+        rows = list(_csv.reader(_io.StringIO(text), delimiter=src_delim))
+
+    with open(p, "a", newline="", encoding="utf-8") as f:
+        w = _csv.writer(f, delimiter=delimiter)
+        if not existed and header is not None:
+            w.writerow(header)
+        for row in rows:
+            cells = []
+            for cell in row:
+                if isinstance(cell, set):
+                    cells.append(_json.dumps(sorted(cell, key=str)))
+                elif isinstance(cell, (list, tuple, dict)):
+                    cells.append(_json.dumps(list(cell) if isinstance(cell, tuple) else cell))
+                else:
+                    cells.append(cell)
+            w.writerow(cells)

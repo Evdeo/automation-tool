@@ -33,6 +33,8 @@ from core.verbs import (
     now,
     wait,
     log,
+    read_clipboard,
+    log_csv,
 )
 
 
@@ -42,6 +44,6 @@ __all__ = [
     "check_visible", "check_enabled", "wait_gone", "check_color",
     "popup", "dismiss_popups",
     "save_as", "screenshot", "close",
-    "now", "wait", "log",
+    "now", "wait", "log", "read_clipboard", "log_csv",
     "runner",
 ]
