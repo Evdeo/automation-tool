@@ -19,7 +19,9 @@ Every verb is a top-level function taking the window first:
     keys / hotkey / wait / now / log / close
 
 Each state function takes `data` and returns `(next_state, data)`.
-Returning `(None, data)` ends the run.
+Returning `(None, data)` ends the run. Each state should perform one
+clearly-defined task — multiple clicks are fine inside a state when
+they belong to the same logical step.
 
 For --loop runs that may inherit a leftover popup from a killed
 iteration, add `dismiss_popups(data.notepad)` at the top of your
@@ -49,52 +51,24 @@ EDITOR    = "0.0.0"
 
 
 # ─── USER: states ────────────────────────────────────────────────────────────
-def state_open_file_menu(data):
+def state_new_tab(data):
     click(data.notepad, FILE_MENU)
-    return "click_new_tab", data
-
-
-def state_click_new_tab(data):
     click(data.notepad, NEW_TAB)
-    return "wait_a", data
+    return "zoom_in", data
 
 
-def state_wait_a(data):
+def state_zoom_in(data):
     wait(5)
-    return "open_view_menu_in", data
-
-
-def state_open_view_menu_in(data):
     click(data.notepad, VIEW_MENU)
-    return "click_zoom_submenu_in", data
-
-
-def state_click_zoom_submenu_in(data):
     click(data.notepad, ZOOM)
-    return "click_zoom_in", data
-
-
-def state_click_zoom_in(data):
     click(data.notepad, ZOOM_IN)
-    return "wait_b", data
+    return "zoom_out", data
 
 
-def state_wait_b(data):
+def state_zoom_out(data):
     wait(5)
-    return "open_view_menu_out", data
-
-
-def state_open_view_menu_out(data):
     click(data.notepad, VIEW_MENU)
-    return "click_zoom_submenu_out", data
-
-
-def state_click_zoom_submenu_out(data):
     click(data.notepad, ZOOM)
-    return "click_zoom_out", data
-
-
-def state_click_zoom_out(data):
     click(data.notepad, ZOOM_OUT)
     return "type_time", data
 
@@ -107,36 +81,24 @@ def state_type_time(data):
 def state_save(data):
     save_as(data.notepad, config.SAVE_PATH)
     log("results", "saved", str(config.SAVE_PATH))
-    return "open_file_for_close", data
+    return "close", data
 
 
-def state_open_file_for_close(data):
+def state_close(data):
     click(data.notepad, FILE_MENU)
-    return "click_close_tab", data
-
-
-def state_click_close_tab(data):
     click(data.notepad, CLOSE_TAB)
     return None, data
 
 
 STATES = {
-    "open_file_menu":         state_open_file_menu,
-    "click_new_tab":          state_click_new_tab,
-    "wait_a":                 state_wait_a,
-    "open_view_menu_in":      state_open_view_menu_in,
-    "click_zoom_submenu_in":  state_click_zoom_submenu_in,
-    "click_zoom_in":          state_click_zoom_in,
-    "wait_b":                 state_wait_b,
-    "open_view_menu_out":     state_open_view_menu_out,
-    "click_zoom_submenu_out": state_click_zoom_submenu_out,
-    "click_zoom_out":         state_click_zoom_out,
-    "type_time":              state_type_time,
-    "save":                   state_save,
-    "open_file_for_close":    state_open_file_for_close,
-    "click_close_tab":        state_click_close_tab,
+    "new_tab":   state_new_tab,
+    "zoom_in":   state_zoom_in,
+    "zoom_out":  state_zoom_out,
+    "type_time": state_type_time,
+    "save":      state_save,
+    "close":     state_close,
 }
 
 
 if __name__ == "__main__":
-    runner.start(STATES, apps=APPS, start_state="open_file_menu")
+    runner.start(STATES, apps=APPS, start_state="new_tab")
