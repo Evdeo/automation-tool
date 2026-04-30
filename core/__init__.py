@@ -19,8 +19,9 @@ from core.verbs import (
     type,
     hotkey,
     # checks / waits
-    check_visible,
-    check_enabled,
+    is_visible,
+    is_enabled,
+    is_color,
     check_color,
     wait_visible,
     wait_enabled,
@@ -48,7 +49,7 @@ from core.verbs import (
 __all__ = [
     "click", "double_click", "right_click", "click_when_enabled", "click_after",
     "fill", "type", "hotkey",
-    "check_visible", "check_enabled", "check_color",
+    "is_visible", "is_enabled", "is_color", "check_color",
     "wait_visible", "wait_enabled", "wait_gone",
     "read_info",
     "popup", "dismiss_popups",

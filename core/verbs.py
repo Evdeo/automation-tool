@@ -85,14 +85,33 @@ def hotkey(window: Control, *combo: str) -> None:
 # --- Checks / waits ---------------------------------------------------------
 
 
-def check_visible(window: Control, control_id: str, timeout: float = 0) -> bool:
-    """True if the control is visible within `timeout` seconds."""
+def is_visible(window: Control, control_id: str, timeout: float = 0) -> bool:
+    """True if the control is visible (snapshot question). Default
+    `timeout=0` checks once and returns. For a blocking wait, use
+    `wait_visible`."""
     return actions.is_present(window, control_id, timeout=timeout)
 
 
-def check_enabled(window: Control, control_id: str, timeout: float = 0) -> bool:
-    """True if the control is visible AND enabled within `timeout` seconds."""
+def is_enabled(window: Control, control_id: str, timeout: float = 0) -> bool:
+    """True if the control is visible AND enabled (snapshot question).
+    Default `timeout=0` checks once and returns. For a blocking wait,
+    use `wait_enabled`."""
     return actions.check_active(window, control_id, timeout=timeout)
+
+
+def is_color(
+    window: Control,
+    control_id: str,
+    rgb: Tuple[int, int, int],
+    dx: int = 0,
+    dy: int = 0,
+    tolerance: int = 0,
+) -> bool:
+    """True if the control's center pixel matches `rgb` — each channel
+    within ±`tolerance`. Default `tolerance=0` is exact match; pass a
+    small value (5-10) to allow for anti-aliasing or theme variation."""
+    actual = actions.get_color(window, control_id, x_offset=dx, y_offset=dy)
+    return all(abs(a - e) <= tolerance for a, e in zip(actual, rgb))
 
 
 def wait_visible(window: Control, control_id: str, timeout: float = 10) -> bool:
@@ -164,13 +183,13 @@ def read_info(window: Control, control_id: str) -> dict:
 
 def each(verb, window: Control, ids, **kwargs) -> list:
     """Apply `verb(window, id, **kwargs)` to every id in `ids` and return
-    a list of results. Generic batch helper for the check / read / wait
+    a list of results. Generic batch helper for the is / read / wait
     family.
 
-        each(check_visible, win, [BTN1, BTN2, BTN3])
+        each(is_visible, win, [BTN1, BTN2, BTN3])
         # → [True, False, True]
 
-        each(check_enabled, win, [BTN1, BTN2], timeout=2)
+        each(is_enabled, win, [BTN1, BTN2], timeout=2)
         # → [True, True]
 
         each(read_info, win, BTN_IDS)

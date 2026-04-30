@@ -14,9 +14,10 @@ focus, useful when a dialog opens with a field already selected):
     fill(window, control_id, text)        click + paste text into a field
     type("hello")                         type at current focus (no click)
     hotkey(window, "ctrl", "s")           send a key combo
-    check_visible(window, control_id)     is it visible? (snapshot)
-    check_enabled(window, control_id)     is it visible AND enabled? (snapshot)
-    check_color(window, control_id)       pixel sample, returns (r, g, b)
+    is_visible(window, control_id)        is it visible? → bool (snapshot)
+    is_enabled(window, control_id)        is it enabled? → bool (snapshot)
+    is_color(window, id, rgb, tol=0)      does the pixel match rgb? → bool
+    check_color(window, control_id)       sample the pixel → (r, g, b)
     wait_visible(window, id, timeout=10)  block until visible
     wait_enabled(window, id, timeout=10)  block until visible AND enabled
     wait_gone(window, id, timeout=10)     block until it disappears (popup closes)
