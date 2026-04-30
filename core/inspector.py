@@ -1,60 +1,64 @@
 # When this file is invoked directly (`python core/inspector.py`) it isn't
 # imported as part of the `core` package, so `from core import tree` would
 # fail. Detect that case and prepend the project root to sys.path so the
-# package-relative imports below resolve. Has no effect when imported
-# normally (as `core.inspector`) or via the project-root entrypoint
-# (`inspector.py`).
+# package-relative imports below resolve.
 if __name__ == "__main__" and __package__ is None:
     import pathlib
     import sys
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+import argparse
 import queue
+import re
 import threading
 import time
 import traceback
 from pathlib import Path
 
+import psutil
 import uiautomation as auto
 from pynput import mouse
 
 from core import tree
 
 
-# Per-session log of the paste-ready blocks. Truncated on startup
-# so the file only contains the current run -- the user grabs the
-# struct_ids they want at the end without scrolling past stale
-# state. Errors / baseline notes are deliberately NOT written to
-# this file; only the lines you'd actually paste into run.py.
-#
-# Anchored to the project root (parent of `core/`) so the file
-# lands in <project>/data/inspector.txt regardless of where the
-# inspector was launched from -- otherwise `python core/inspector.py`
-# from a parent shell would silently scatter `data/` directories.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _LOG_PATH = _PROJECT_ROOT / "data" / "inspector.txt"
 _log_file = None
 
+# Process scope: clicks outside this exe are silently ignored.
+# None = "lock in on first valid click". After lock-in this becomes
+# the lowercase exe stem (e.g. "notepad").
+_scope_stem = None
+
+# Dedupe consecutive duplicate captures (drag, double-click, repeat
+# clicks on the same control). Stores the last emitted struct_id for
+# the active window key — re-emit is suppressed.
+_last_struct_per_window = {}
+
+# Per-session capture log: every (non-duplicate) click is appended.
+# At session end `_emit_session_block` writes a paste-ready Python
+# block to inspector.txt summarizing this list. Each entry:
+#   {"struct_id": str, "name_path": str, "win_stem": str}
+_captures = []
+
 
 def _emit(line):
-    """Print to stdout AND append to the session log."""
     print(line)
     if _log_file is not None:
         _log_file.write(line + "\n")
         _log_file.flush()
 
 
-# Decoded HRESULTs we surface explicitly so the message tells the
-# user *which* COM precondition tripped, not just the bare number.
 _HRESULTS = {
-    -2147417843: "RPC_E_CANTCALLOUT_ININPUTSYNCCALL",  # 0x8001010D
-    -2147418111: "RPC_E_CALL_REJECTED",                 # 0x80010001
-    -2147417835: "RPC_E_SERVERCALL_RETRYLATER",         # 0x8001010A
-    -2147023174: "RPC_S_SERVER_UNAVAILABLE",            # 0x800706BA
-    -2147221008: "CO_E_NOTINITIALIZED",                 # 0x800401F0
-    -2147220991: "EVENT_E_INTERNALEXCEPTION",           # 0x80040201
-    -2146233083: "COR_E_TIMEOUT",                       # 0x80131505
-    -2147220984: "UIA_E_ELEMENTNOTAVAILABLE",           # 0x80040208
+    -2147417843: "RPC_E_CANTCALLOUT_ININPUTSYNCCALL",
+    -2147418111: "RPC_E_CALL_REJECTED",
+    -2147417835: "RPC_E_SERVERCALL_RETRYLATER",
+    -2147023174: "RPC_S_SERVER_UNAVAILABLE",
+    -2147221008: "CO_E_NOTINITIALIZED",
+    -2147220991: "EVENT_E_INTERNALEXCEPTION",
+    -2146233083: "COR_E_TIMEOUT",
+    -2147220984: "UIA_E_ELEMENTNOTAVAILABLE",
 }
 
 
@@ -67,23 +71,9 @@ def _hresult_name(exc):
 
 # Mouse-hook callbacks fire on pynput's listener thread *while Windows is
 # dispatching input synchronously*. Any COM call made from that state
-# fails with RPC_E_CANTCALLOUT_ININPUTSYNCCALL (HRESULT -2147417843,
-# "An outgoing call cannot be made since the application is dispatching
-# an input-synchronous call") — most visible when clicking menus, which
-# trigger input-sync SendMessage on the target.
-#
-# Spawning a fresh thread per click is *not* enough. comtypes defaults
-# CoInitializeEx to STA (COINIT_APARTMENTTHREADED), and uiautomation's
-# `_AutomationClient` is a lazy singleton: the IUIAutomation proxy is
-# created on whichever thread first uses it and is bound to that
-# thread's STA. A short-lived per-click worker creates the singleton
-# in its own apartment, then dies — leaving the singleton bound to a
-# dead apartment. Subsequent workers' calls into it cross apartments
-# and re-trigger the input-sync error.
-#
-# Fix: one persistent worker thread that owns the COM apartment for
-# the program's lifetime. The mouse callback only enqueues coords;
-# the worker pulls them and runs all UIA calls on its own thread.
+# fails with RPC_E_CANTCALLOUT_ININPUTSYNCCALL. The single persistent
+# worker below owns the COM apartment for the program's lifetime; the
+# mouse callback only enqueues coords.
 _clicks: "queue.Queue[tuple[int, int]]" = queue.Queue()
 
 
@@ -104,33 +94,11 @@ def _top_window(ctrl):
 
 def _path_to(win, x, y):
     """Walk `win` top-down to the deepest descendant whose bounding
-    rectangle contains the click point (x, y), using only one
-    BoundingRectangle COM call per child per level.
-
-    Returns (leaf_ctrl, name_path, struct_id). The struct_id is
-    identical to what `tree.walk_live` records in the snapshot,
-    because the descent uses the same enumeration order. `leaf_ctrl`
-    is the same control the inspection should report on — using it
-    instead of the original `ControlFromPoint` result avoids a
-    second flaky cross-process query for properties like
-    `BoundingRectangle`, which sometimes fails on the leaf returned
-    by `ElementFromPoint` while succeeding on the bbox-descended
-    leaf (they're often the same element accessed via different
-    paths through the UIA tree).
-
-    Element-comparison strategies (RuntimeId, ControlsAreSame) are
-    deliberately *not* used here — they cost 2-3 extra COM calls
-    per child per level, blowing _path_to runtime out to seconds on
-    wide trees. Bbox-containment with smallest-area tie-break
-    converges on the same leaf that `ElementFromPoint` would have
-    returned, much faster.
+    rectangle contains the click point, returning (leaf_ctrl, name_path,
+    struct_id). The struct_id matches what `tree.walk_live` records.
     """
     chain = [(win, 0)]
     cur = win
-    # Guard against pathological trees where a child's bbox keeps
-    # containing the click point at every level forever (proxy
-    # cycles, faulty providers). Real UI trees are well under 50
-    # deep; 100 is a generous ceiling that still bounds runtime.
     for _ in range(100):
         try:
             children = cur.GetChildren()
@@ -159,60 +127,72 @@ def _path_to(win, x, y):
     return cur, name_path, struct_id
 
 
+def _exe_stem_for_pid(pid):
+    try:
+        return (psutil.Process(pid).name() or "").rsplit(".", 1)[0].lower()
+    except Exception:
+        return ""
+
+
 def _inspect(x, y):
+    global _scope_stem
+
     ctrl = auto.ControlFromPoint(x, y)
     if ctrl is None:
-        print(f"[{x},{y}] no element under cursor")
         return
 
     win = _top_window(ctrl)
+    try:
+        win_pid = win.ProcessId
+    except Exception:
+        return
+    win_stem = _exe_stem_for_pid(win_pid)
+    if not win_stem:
+        return
+
+    # Scope filter: lock on first click, ignore everything else.
+    if _scope_stem is None:
+        _scope_stem = win_stem
+        _emit(f"** locked to process: {win_stem}.exe")
+    elif win_stem != _scope_stem:
+        return
+
     _, created = tree.ensure_snapshot(win)
     if created:
-        print(f"** baseline captured: {tree.snapshot_path(win)}")
+        _emit(f"** baseline captured: {tree.snapshot_path(win)}")
 
-    _, _, struct_id = _path_to(win, x, y)
-    # Three paste-ready strings:
-    #  - window: live title -- usable as-is when stable, or a substring
-    #    works since apps.get_window() does substring matching.
-    #  - process: executable stem, rock-solid across iterations when
-    #    the live title drifts (run counters, document filenames,
-    #    instrument serials). Use as the substring fallback.
-    #  - struct_id: pasted into run.py as `scan = "0.14.2"` etc.
+    _, name_path, struct_id = _path_to(win, x, y)
+
+    # Suppress consecutive duplicates per window so drag / double-click
+    # / repeat clicks on the same control don't spam the log.
+    win_key = tree.snapshot_key(win)
+    if _last_struct_per_window.get(win_key) == struct_id:
+        return
+    _last_struct_per_window[win_key] = struct_id
+
+    _captures.append({
+        "struct_id": struct_id,
+        "name_path": name_path,
+        "win_stem": win_stem,
+    })
+
     _emit("-" * 60)
     _emit(f'window    : "{tree._name(win)}"')
     _emit(f'process   : "{tree._process_stem(win)}"')
     _emit(f'struct_id : "{struct_id}"')
 
 
-# HRESULTs that mean "the target server is busy / dispatching input;
-# try again in a moment". UIAutomation calls into the WPF app cross-
-# process; while the app's UI thread is in the middle of dispatching
-# its own click (e.g., opening a menu), it can't service incoming
-# COM calls and the request bounces back. These are transient — a
-# short backoff usually clears them.
 _TRANSIENT_HRESULTS = {
     "RPC_E_CANTCALLOUT_ININPUTSYNCCALL",
     "RPC_E_CALL_REJECTED",
     "RPC_E_SERVERCALL_RETRYLATER",
-    # The target's UIA provider was mid-update when we queried —
-    # firing property-change events that errored out. Common when
-    # a menu is animating open. Retry usually clears it.
     "EVENT_E_INTERNALEXCEPTION",
-    # Cross-process UIA query exceeded its timeout because the
-    # target's UI thread was busy. Retrying after a short wait
-    # almost always works.
     "COR_E_TIMEOUT",
-    # The element vanished between queries (popup closed). Retry
-    # picks up whatever's now under the cursor.
     "UIA_E_ELEMENTNOTAVAILABLE",
 }
 
 
 def _inspect_with_retry(x, y, max_attempts=8):
-    """Retry transient cross-process COM failures silently with
-    exponential backoff (50ms doubling, capped at ~3.2s total).
-    Print only on the final failure — successful retries are
-    indistinguishable from a clean first attempt to the user."""
     delay = 0.05
     for attempt in range(1, max_attempts + 1):
         try:
@@ -231,20 +211,7 @@ def _inspect_with_retry(x, y, max_attempts=8):
 
 
 def _worker():
-    # Single long-lived worker. Initializes COM once for this thread
-    # and keeps the apartment alive for the program's lifetime, so
-    # uiautomation's IUIAutomation singleton stays valid across all
-    # clicks. See module-level comment.
-    #
-    # The inner try/except is the survival barrier: if any exception
-    # ever escapes _inspect_with_retry (it shouldn't, but UIA
-    # surprises happen), the worker keeps running so the inspector
-    # stays responsive. Without this, one freak failure would kill
-    # the worker silently and every subsequent click would be a
-    # no-op while the listener appeared to still be running.
     with auto.UIAutomationInitializerInThread(debug=False):
-        # Force singleton creation on THIS thread (not on whatever
-        # thread happens to make the first UIA call later).
         auto.GetRootControl()
         while True:
             item = _clicks.get()
@@ -263,11 +230,108 @@ def _on_click(x, y, button, pressed):
     _clicks.put((x, y))
 
 
-def run():
-    global _log_file
+def _sanitize_const(name):
+    """Convert a leaf control name to UPPER_SNAKE_CASE; empty if nothing
+    usable remains."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", name or "").strip("_").upper()
+
+
+def _segment_name(seg):
+    """Extract the name portion of a 'Name:Role' or '#idx:Role' segment."""
+    name, sep, _ = seg.rpartition(":")
+    return name if sep else seg
+
+
+def _emit_session_block():
+    """Append a paste-ready Python block to the session log: one constant
+    per unique struct_id captured this session, then skeleton state
+    functions in the order the user clicked. Names come from the leaf
+    control's Name; collisions are disambiguated by parent name."""
+    if not _captures or _log_file is None:
+        return
+
+    # Order unique struct_ids by first-seen click index.
+    first_idx = {}
+    for i, cap in enumerate(_captures):
+        first_idx.setdefault(cap["struct_id"], i)
+    unique = [_captures[first_idx[s]] for s in
+              sorted(first_idx, key=first_idx.get)]
+
+    # Suggest a constant name from each leaf segment.
+    suggested = {}
+    for n, cap in enumerate(unique, 1):
+        leaf_seg = cap["name_path"].split("/")[-1]
+        base = _sanitize_const(_segment_name(leaf_seg))
+        # Empty or starts with a digit → not a valid Python identifier.
+        if not base or base[0].isdigit():
+            base = f"STEP_{n}"
+        suggested[cap["struct_id"]] = base
+
+    # Disambiguate collisions: prefix with parent leaf name; if still
+    # colliding, suffix _2, _3, ...
+    def regroup():
+        groups = {}
+        for sid, name in suggested.items():
+            groups.setdefault(name, []).append(sid)
+        return groups
+
+    for name, sids in list(regroup().items()):
+        if len(sids) <= 1:
+            continue
+        for sid in sids:
+            cap = next(c for c in unique if c["struct_id"] == sid)
+            segs = cap["name_path"].split("/")
+            parent = _sanitize_const(_segment_name(segs[-2])) if len(segs) > 1 else ""
+            if parent:
+                suggested[sid] = f"{parent}_{name}"
+
+    for name, sids in list(regroup().items()):
+        if len(sids) <= 1:
+            continue
+        for i, sid in enumerate(sids[1:], 2):
+            suggested[sid] = f"{name}_{i}"
+
+    win_stem = unique[0]["win_stem"]
+    width = max(len(suggested[c["struct_id"]]) for c in unique)
+
+    lines = [
+        "",
+        "# --- paste into run.py ---------------------------------------------",
+    ]
+    for cap in unique:
+        const = suggested[cap["struct_id"]]
+        readable = _segment_name(cap["name_path"].split("/")[-1]) or "?"
+        lines.append(f'{const:<{width}} = "{cap["struct_id"]}"  # {readable}')
+    lines.append("")
+
+    for i, cap in enumerate(_captures, 1):
+        const = suggested[cap["struct_id"]]
+        nxt = f'"step{i + 1}"' if i < len(_captures) else "None"
+        lines.append(f"def state_step{i}(ctx):")
+        lines.append(f"    actions.press(ctx.{win_stem}, {const})")
+        lines.append(f"    return {nxt}")
+        lines.append("")
+
+    block = "\n".join(lines)
+    _log_file.write(block + "\n")
+    _log_file.flush()
+    print(block)
+
+
+def run(scope=None):
+    global _log_file, _scope_stem
+
+    if scope:
+        stem = scope.rsplit(".", 1)[0] if "." in scope else scope
+        _scope_stem = stem.lower()
+
     _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     print("Inspector running. Left-click any element. Ctrl+C to quit.")
-    print("Baselines auto-saved on first click in each window.")
+    if _scope_stem:
+        print(f"Pre-bound to process: {_scope_stem}.exe")
+    else:
+        print("Will lock to the first clicked window's process; "
+              "later clicks elsewhere are ignored.")
     print(f"Session log: {_LOG_PATH}")
     with open(_LOG_PATH, "w") as f:
         _log_file = f
@@ -275,9 +339,27 @@ def run():
         try:
             with mouse.Listener(on_click=_on_click) as listener:
                 listener.join()
+        except KeyboardInterrupt:
+            pass
         finally:
+            _emit_session_block()
             _log_file = None
 
 
+def _parse_args():
+    p = argparse.ArgumentParser(
+        description="Click-to-capture inspector. Locks onto the first "
+                    "clicked process; pass an exe name to pre-bind."
+    )
+    p.add_argument(
+        "process",
+        nargs="?",
+        help="Optional process name to pre-bind (e.g. notepad.exe). "
+             "Without this, the inspector locks on the first click.",
+    )
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    run()
+    args = _parse_args()
+    run(scope=args.process)

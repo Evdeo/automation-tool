@@ -1,13 +1,22 @@
-"""Top-level entry point for the inspector.
+"""Click-to-capture inspector.
 
-Run from the project root:    python inspector.py
+    python inspector.py                 # locks on first click
+    python inspector.py notepad.exe     # pre-binds to a process
 
-Click any UI element on screen and the matching tree_id (full path + leaf)
-prints to the console — paste the leaf into actions.press / press_path
-calls in your demo. The first click in each window auto-saves a baseline
-snapshot under data/snapshots/."""
+Clicks outside the locked process are silently ignored. Consecutive
+clicks on the same control are deduped. Output is also written to
+data/inspector.txt.
+"""
+import argparse
 
 from core.inspector import run
 
+
+def _parse():
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("process", nargs="?", help="Optional exe name to pre-bind")
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    run()
+    run(scope=_parse().process)

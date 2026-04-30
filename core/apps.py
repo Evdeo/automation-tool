@@ -22,23 +22,22 @@ def verify_installed(paths):
     via shutil.which for bare names (PATH lookup handles things like
     "notepad.exe" -> System32) and Path.exists for anything that
     looks like a directory path. Collects ALL misses into one error
-    so the user fixes them in a single edit instead of one-at-a-time."""
+    annotated with the reason so the user knows whether to fix the
+    path or install the app."""
     missing = []
     for path in paths:
         p = Path(path)
-        # Treat anything with a separator OR drive letter as a literal
-        # filesystem path; bare names (e.g. "notepad.exe") fall through
-        # to PATH resolution.
         if p.is_absolute() or "/" in path or "\\" in path:
             if not p.exists():
-                missing.append(path)
+                missing.append((path, "path does not exist — check the path"))
         elif shutil.which(path) is None:
-            missing.append(path)
+            missing.append((path, "not on PATH — is it installed?"))
     if missing:
-        bullets = "\n  - ".join(missing)
+        width = max(len(p) for p, _ in missing)
+        bullets = "\n  - ".join(f"{p:<{width}}  ({why})" for p, why in missing)
         raise FileNotFoundError(
             "Required apps not found:\n  - " + bullets +
-            "\nFix the paths in REQUIRED_APPS."
+            "\nFix the paths in APPS."
         )
 
 
@@ -87,8 +86,7 @@ def close_app(name):
     return closed
 
 
-def get_window(title=None):
-    title = title or config.TARGET_WINDOW_TITLE
+def get_window(title):
     while True:
         win = auto.WindowControl(searchDepth=1, Name=title)
         if win.Exists(0, 0):

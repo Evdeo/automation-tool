@@ -463,7 +463,8 @@ def find_or_heal(walked, tree_id, snap):
 if __name__ == "__main__":
     import sys
     from core import apps
-    title = sys.argv[1] if len(sys.argv) > 1 else config.TARGET_WINDOW_TITLE
-    win = apps.get_window(title)
+    if len(sys.argv) < 2:
+        sys.exit("usage: python -m core.tree <window_title_substring>")
+    win = apps.get_window(sys.argv[1])
     save_snapshot(win)
     print(f"Snapshot saved: {snapshot_path(win)}")

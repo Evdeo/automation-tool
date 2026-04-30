@@ -140,7 +140,10 @@ def _resolve(window, tree_id):
     apps.bring_to_foreground(window)
 
     # Snapshot is loaded once outside the retry loop — drift detection
-    # and self-healing both consume it.
+    # and self-healing both consume it. If no snapshot exists yet (fresh
+    # checkout, never ran inspector), the first successful resolve below
+    # bootstraps one from the live tree so subsequent resolves can heal
+    # against drift.
     snap = tree.load_snapshot(window)
     deadline = time.time() + config.RESOLVE_TIMEOUT_SEC
     while True:
@@ -150,6 +153,9 @@ def _resolve(window, tree_id):
         if element is not None:
             center = _center(element)
             if center is not None:
+                if snap is None:
+                    tree.save_snapshot(window, walked)
+                    snap = tree.to_serializable(walked)
                 if healed:
                     live_struct = next(
                         (n.get("struct_id") for n in walked
@@ -165,7 +171,15 @@ def _resolve(window, tree_id):
                 return element, center
         db.log("missing", tree.snapshot_key(window), tree_id)
         if time.time() > deadline:
-            raise TimeoutError(f"could not resolve {tree_id} within {config.RESOLVE_TIMEOUT_SEC}s")
+            key = tree.snapshot_key(window)
+            snap_path = tree.snapshot_path(window)
+            stem = tree._process_stem(window) or "<app>"
+            raise TimeoutError(
+                f"could not resolve {tree_id!r} within {config.RESOLVE_TIMEOUT_SEC}s "
+                f"(window={key}, snapshot={snap_path}). "
+                f"Run `python inspector.py {stem}.exe`, click the target, "
+                f"and update the constant in run.py."
+            )
         time.sleep(config.DRIFT_RETRY_BACKOFF_SEC)
 
 

@@ -1,17 +1,19 @@
+from datetime import datetime
 from pathlib import Path
-
-TARGET_WINDOW_TITLE = "Notepad"
 
 DB_PATH = "data/runs.db"
 
 TREE_SNAPSHOT_DIR = Path("data/snapshots")
 
-# Output for the demo's save step. run.py builds the full path as
-# RESULTS_DIR / "<timestamp>" / RESULT_FILENAME, so each pass writes
-# into its own dated folder. Filename stays generic so downstream
-# tooling can find "the data file" without parsing names.
 RESULTS_DIR = Path("data/results")
 RESULT_FILENAME = "data.txt"
+
+# Per-run output: a fresh timestamped folder so each pass writes its
+# own data file. Computed at import; --loop respawns the process per
+# iteration, so each iteration gets a fresh stamp.
+SAVE_PATH = (
+    RESULTS_DIR / datetime.now().strftime("%Y-%m-%d_%H-%M-%S") / RESULT_FILENAME
+).resolve()
 
 LOOP_TIMEOUT_MIN = 15
 
