@@ -60,24 +60,26 @@ def run_with_watchdog(test_loop, kill_on_timeout=None):
         _supervise(test_loop, timeout_sec, kill_on_timeout=kill_on_timeout)
 
 
-def _run_states(states, start_state, ctx):
+def _run_states(states, start_state, data):
     """State-machine driver with automatic transition logging.
 
-    Each state function returns the next state name (or None to end).
-    Entry and exit (with duration) are auto-logged to the `states`
-    table. Payload-bearing logs (saved path, written value, etc.)
-    still belong in the state function.
+    Each state function takes `data` and returns `(next_state, data)`
+    — a tuple so the data flow is explicit, not implicit by-reference.
+    Returning `(None, data)` ends the run. Entry and exit (with
+    duration) are auto-logged to the `states` table. Payload-bearing
+    logs (saved path, written value, etc.) still belong in the state
+    function via `core.log`.
     """
     state = start_state
     while state is not None:
         fn = states[state]
         t0 = time.time()
         db.log("states", state, "entered", 0.0)
-        nxt = fn(ctx)
+        nxt, data = fn(data)
         dur = round(time.time() - t0, 3)
         db.log("states", state, "exited", dur, nxt or "")
         state = nxt
-    return ctx
+    return data
 
 
 def _normalize_apps(apps, app_mod):
@@ -106,12 +108,13 @@ def start(states, apps, start_state):
 
     - Parses `--loop`.
     - Verifies every launch path in `apps` is reachable.
-    - Pre-launches every app and exposes each one as `ctx.<name>` to
+    - Pre-launches every app and exposes each one as `data.<name>` to
       every state function (auto-name = lowercased exe stem; pass
       `apps={"my_name": "path.exe", ...}` to override).
     - Drives the state machine starting at `start_state`. Each state
-      function takes `ctx` and returns the next state name (or None
-      to end). Entry/exit transitions are auto-logged with timing.
+      function takes `data` and returns `(next_state, data)`. Returning
+      `(None, data)` ends the run. Entry/exit transitions are auto-
+      logged with timing.
     - On `--loop`, respawns a fresh child process per iteration; the
       watchdog kills any iteration that exceeds `LOOP_TIMEOUT_MIN`.
       `kill_on_timeout` is auto-derived from `apps` so a hung GUI
@@ -140,11 +143,10 @@ def start(states, apps, start_state):
     kill_names = [app_mod._exe_stem(s.path) + ".exe" for _, s in pairs]
 
     def driver():
-        from core.window import Window
-        ctx = SimpleNamespace()
+        data = SimpleNamespace()
         for name, spec in pairs:
-            setattr(ctx, name, Window(app_mod.launch(spec)))
-        _run_states(states, start_state, ctx)
+            setattr(data, name, app_mod.launch(spec))
+        _run_states(states, start_state, data)
 
     if args.loop:
         run_with_watchdog(driver, kill_on_timeout=kill_names)
