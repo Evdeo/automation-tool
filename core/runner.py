@@ -1,4 +1,5 @@
 import argparse
+import functools
 import multiprocessing as mp
 import re
 import time
@@ -142,13 +143,24 @@ def start(states, apps, start_state):
     apps_mod.verify_installed([s.path for _, s in pairs])
     kill_names = [app_mod._exe_stem(s.path) + ".exe" for _, s in pairs]
 
-    def driver():
-        data = SimpleNamespace()
-        for name, spec in pairs:
-            setattr(data, name, app_mod.launch(spec))
-        _run_states(states, start_state, data)
+    # Bundle args via functools.partial — module-level _driver_entry
+    # plus picklable args (states is a dict of module-level functions;
+    # pairs is a list of (str, frozen Spec)). A nested closure here
+    # would fail to pickle on Windows under spawn-based multiprocessing.
+    target = functools.partial(_driver_entry, states, start_state, pairs)
 
     if args.loop:
-        run_with_watchdog(driver, kill_on_timeout=kill_names)
+        run_with_watchdog(target, kill_on_timeout=kill_names)
     else:
-        run_once_with_watchdog(driver, kill_on_timeout=kill_names)
+        run_once_with_watchdog(target, kill_on_timeout=kill_names)
+
+
+def _driver_entry(states, start_state, pairs):
+    """Runs in the watchdog's child process. Launches every app and
+    drives the state machine. Module-level so multiprocessing.spawn
+    can pickle the call target."""
+    from core import app as app_mod
+    data = SimpleNamespace()
+    for name, spec in pairs:
+        setattr(data, name, app_mod.launch(spec))
+    _run_states(states, start_state, data)
