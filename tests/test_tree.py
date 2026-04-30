@@ -53,12 +53,35 @@ class TestNamingHelpers(unittest.TestCase):
 
 
 class TestSnapshotKeyAndPath(unittest.TestCase):
-    def test_snapshot_key_sanitises(self):
-        win = FakeCtrl(name="My App: v1.0/foo", role="WindowControl")
+    def setUp(self):
+        self._orig_title = config.TARGET_WINDOW_TITLE
+
+    def tearDown(self):
+        config.TARGET_WINDOW_TITLE = self._orig_title
+
+    def test_snapshot_key_uses_configured_title(self):
+        # The live window's Name has volatile content (a version,
+        # path), but TARGET_WINDOW_TITLE is the stable identifier;
+        # snapshot_key keys off the latter so the file is the same
+        # across runs.
+        config.TARGET_WINDOW_TITLE = "My App"
+        win = FakeCtrl(name="My App - v3.7 [run 12345]", role="WindowControl")
+        self.assertEqual(tree.snapshot_key(win), "My_App_WindowControl")
+
+    def test_snapshot_key_sanitises_configured_title(self):
+        config.TARGET_WINDOW_TITLE = "My App: v1.0/foo"
+        win = FakeCtrl(name="something else", role="WindowControl")
         self.assertEqual(tree.snapshot_key(win), "My_App__v1.0_foo_WindowControl")
 
+    def test_snapshot_key_falls_back_to_window_name(self):
+        # When TARGET_WINDOW_TITLE is unset, fall back to live Name.
+        config.TARGET_WINDOW_TITLE = ""
+        win = FakeCtrl(name="LiveName", role="WindowControl")
+        self.assertEqual(tree.snapshot_key(win), "LiveName_WindowControl")
+
     def test_snapshot_path_under_configured_dir(self):
-        win = FakeCtrl(name="Notepad", role="WindowControl")
+        config.TARGET_WINDOW_TITLE = "Notepad"
+        win = FakeCtrl(name="Notepad - Untitled", role="WindowControl")
         path = tree.snapshot_path(win)
         self.assertEqual(path.name, "Notepad_WindowControl.json")
         self.assertEqual(path.parent, Path(config.TREE_SNAPSHOT_DIR))

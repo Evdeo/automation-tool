@@ -85,7 +85,22 @@ def to_serializable(walked):
 
 
 def snapshot_key(window):
-    seg = _segment(window, 0)
+    """Sanitised filename stem for `window`'s snapshot.
+
+    Uses `config.TARGET_WINDOW_TITLE` (a stable, user-supplied
+    substring) as the name component when it's set, falling back
+    to the live `window.Name` otherwise. The live title often
+    contains volatile fragments — instrument serial numbers, run
+    counters, document filenames — so keying off it produces a new
+    snapshot file every run and the heal/diff logic never matches
+    against an existing baseline. The configured title is the
+    promise that "this window is the same one across runs".
+    """
+    title = getattr(config, "TARGET_WINDOW_TITLE", None)
+    name = _safe(title) if title else _name(window)
+    role = _role(window)
+    base = name if name else "#0"
+    seg = f"{base}{_ROLE_SEP}{role}"
     return re.sub(r"[^A-Za-z0-9_.-]", "_", seg)
 
 

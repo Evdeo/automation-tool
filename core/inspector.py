@@ -132,39 +132,22 @@ def _path_to(win, x, y):
     return cur, name_path, struct_id
 
 
-def _step(label, fn, *args, **kwargs):
-    """Run `fn(*args)` while logging which step is in flight + how
-    long it took. On exception, the surrounding try/except prints
-    the label so we know *which* COM call tripped without having
-    to read line numbers off a traceback."""
-    t0 = time.perf_counter()
-    try:
-        return fn(*args, **kwargs)
-    finally:
-        dt = (time.perf_counter() - t0) * 1000
-        print(f"  [step] {label}: {dt:.1f} ms")
-
-
-def _inspect(x, y, click_id):
-    th = threading.current_thread().name
-    print(f"[click #{click_id}] worker={th} coords=({x},{y}) "
-          f"queue_depth={_clicks.qsize()}")
-
-    ctrl = _step("ControlFromPoint", auto.ControlFromPoint, x, y)
+def _inspect(x, y):
+    ctrl = auto.ControlFromPoint(x, y)
     if ctrl is None:
         print(f"[{x},{y}] no element under cursor")
         return
 
-    win = _step("_top_window", _top_window, ctrl)
-    _, created = _step("ensure_snapshot", tree.ensure_snapshot, win)
+    win = _top_window(ctrl)
+    _, created = tree.ensure_snapshot(win)
     if created:
         print(f"** baseline captured: {tree.snapshot_path(win)}")
 
-    leaf, tid, struct_id = _step("_path_to", _path_to, win, x, y)
     # Report on the bbox-descended leaf, not the original ctrl from
     # ControlFromPoint — the leaf's properties are noticeably more
     # reliable on the WPF-in-WinForms bridge, which is the common
     # source of EVENT_E_INTERNALEXCEPTION on `ctrl.BoundingRectangle`.
+    leaf, tid, struct_id = _path_to(win, x, y)
     try:
         rect = leaf.BoundingRectangle
         cx = (rect.left + rect.right) // 2
@@ -217,26 +200,24 @@ _TRANSIENT_HRESULTS = {
 }
 
 
-def _inspect_with_retry(x, y, click_id, max_attempts=8):
-    delay = 0.05  # 50ms, doubling up to ~3.2s total over 8 attempts
+def _inspect_with_retry(x, y, max_attempts=8):
+    """Retry transient cross-process COM failures silently with
+    exponential backoff (50ms doubling, capped at ~3.2s total).
+    Print only on the final failure — successful retries are
+    indistinguishable from a clean first attempt to the user."""
+    delay = 0.05
     for attempt in range(1, max_attempts + 1):
         try:
-            _inspect(x, y, click_id)
-            if attempt > 1:
-                print(f"[click #{click_id}] succeeded on attempt {attempt}")
+            _inspect(x, y)
             return
         except Exception as e:
             hres = _hresult_name(e)
-            transient = hres in _TRANSIENT_HRESULTS
-            tag = f" [{hres}]" if hres else ""
-            if not transient or attempt == max_attempts:
-                print(f"[click #{click_id}] inspector error{tag} "
-                      f"(attempt {attempt}/{max_attempts}): "
-                      f"{type(e).__name__}: {e}")
-                traceback.print_exc()
+            if hres not in _TRANSIENT_HRESULTS or attempt == max_attempts:
+                tag = f" [{hres}]" if hres else ""
+                print(f"inspector error{tag}: {type(e).__name__}: {e}")
+                if hres is None:
+                    traceback.print_exc()
                 return
-            print(f"[click #{click_id}] transient{tag} on attempt "
-                  f"{attempt}; backing off {delay*1000:.0f} ms")
             time.sleep(delay)
             delay *= 2
 
@@ -246,29 +227,21 @@ def _worker():
     # and keeps the apartment alive for the program's lifetime, so
     # uiautomation's IUIAutomation singleton stays valid across all
     # clicks. See module-level comment.
-    th = threading.current_thread().name
-    print(f"[worker] starting on {th}")
     with auto.UIAutomationInitializerInThread(debug=False):
         # Force singleton creation on THIS thread (not on whatever
         # thread happens to make the first UIA call later).
         auto.GetRootControl()
-        print(f"[worker] UIA initialized on {th}, ready")
-        click_id = 0
         while True:
             item = _clicks.get()
             if item is None:
                 return
-            click_id += 1
-            x, y, t_enq = item
-            latency = (time.perf_counter() - t_enq) * 1000
-            print(f"[click #{click_id}] dequeued after {latency:.1f} ms")
-            _inspect_with_retry(x, y, click_id)
+            _inspect_with_retry(*item)
 
 
 def _on_click(x, y, button, pressed):
     if not pressed or button != mouse.Button.left:
         return
-    _clicks.put((x, y, time.perf_counter()))
+    _clicks.put((x, y))
 
 
 def run():
