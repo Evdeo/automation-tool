@@ -9,6 +9,8 @@ if __name__ == "__main__" and __package__ is None:
     import sys
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+import threading
+
 import pyautogui
 import uiautomation as auto
 from pynput import mouse
@@ -34,7 +36,15 @@ def _top_window(ctrl):
 def _path_to(element):
     """Returns (name_path, struct_id) — the full slash-separated
     name+role path AND the dotted-index structural path for the
-    same element. Both are computed from the same parent-chain walk."""
+    same element. Both are computed from the same parent-chain walk.
+
+    Sibling index comes from walking `GetPreviousSiblingControl()` —
+    NOT from `parent.GetChildren()` + `==`. uiautomation.Control has
+    no reliable cross-instance equality (each call returns a fresh
+    wrapper around the same UIA element), so `sib == cur` would
+    almost never match and `idx` would land at `len(children)` for
+    every sibling, collapsing distinct controls onto the same path.
+    """
     chain = []
     cur = element
     while cur is not None:
@@ -43,10 +53,10 @@ def _path_to(element):
             chain.append((cur, 0))
             break
         idx = 0
-        for sib in parent.GetChildren():
-            if sib == cur:
-                break
+        prev = cur.GetPreviousSiblingControl()
+        while prev is not None:
             idx += 1
+            prev = prev.GetPreviousSiblingControl()
         chain.append((cur, idx))
         cur = parent
     chain.reverse()
@@ -55,14 +65,22 @@ def _path_to(element):
     return name_path, struct_id
 
 
-def _on_click(x, y, button, pressed):
-    if not pressed or button != mouse.Button.left:
-        return
-    # pynput's Listener invokes this callback on its own thread. uiautomation
-    # uses COM, which must be initialized per thread — without this context
-    # manager every call below raises `[WinError -2147221008] CoInitialize
-    # has not been called`. The Initializer enters/exits MTA on the
-    # listener thread for the duration of the click handler.
+def _inspect(x, y):
+    # Runs on a worker thread spawned from the mouse-hook callback —
+    # NOT on the hook thread itself. Windows low-level mouse hooks
+    # execute while input is being dispatched input-synchronously,
+    # and COM blocks any outgoing UIA call made from that state with
+    # RPC_E_CANTCALLOUT_ININPUTSYNCCALL (HRESULT -2147417843,
+    # surfacing as "An outgoing call cannot be made since the
+    # application is dispatching an input-synchronous call"). Most
+    # noticeable when clicking menus, which trigger an input-sync
+    # SendMessage to the target. Off-thread inspection sidesteps it.
+    #
+    # uiautomation uses COM, which must be initialized per thread —
+    # without this context manager every call below raises
+    # `[WinError -2147221008] CoInitialize has not been called`. The
+    # Initializer enters/exits MTA on this worker for the duration
+    # of the inspection.
     try:
         with auto.UIAutomationInitializerInThread(debug=False):
             ctrl = auto.ControlFromPoint(x, y)
@@ -95,6 +113,14 @@ def _on_click(x, y, button, pressed):
             print(f"enabled   : {ctrl.IsEnabled}")
     except Exception as e:
         print(f"inspector error: {e}")
+
+
+def _on_click(x, y, button, pressed):
+    if not pressed or button != mouse.Button.left:
+        return
+    # Hand off to a worker thread so the mouse hook returns immediately.
+    # See _inspect() for why doing UIA work on the hook thread fails.
+    threading.Thread(target=_inspect, args=(x, y), daemon=True).start()
 
 
 def run():
