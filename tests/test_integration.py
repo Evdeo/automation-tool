@@ -19,7 +19,7 @@ import psutil
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config  # noqa: E402
-from core import actions, apps, db, dialogs, inspector, tree  # noqa: E402
+from core import actions, apps, db, dialogs, tree  # noqa: E402
 
 
 def _kill_notepad():
