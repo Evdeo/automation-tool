@@ -20,43 +20,6 @@ from core import actions, apps, tree as tree_mod
 _user32 = ctypes.windll.user32
 
 
-def find_dialog(title_substring, class_name="#32770", timeout=8.0):
-    """Find a top-level dialog whose class is `class_name` and whose title
-    contains `title_substring` (case-insensitive). Polls until `timeout`.
-
-    Returns the matching `auto.Control` or None. Used for Save As / Open /
-    other native dialogs that aren't reachable via uiautomation's
-    `GetRootControl().GetChildren()` because they're owned by their parent
-    application window.
-    """
-    deadline = time.time() + timeout
-    target = title_substring.lower()
-    EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-
-    while time.time() < deadline:
-        found = []
-
-        def cb(hwnd, _lp):
-            if not _user32.IsWindowVisible(hwnd):
-                return True
-            cls = ctypes.create_unicode_buffer(64)
-            _user32.GetClassNameW(hwnd, cls, 64)
-            if cls.value != class_name:
-                return True
-            length = _user32.GetWindowTextLengthW(hwnd)
-            buf = ctypes.create_unicode_buffer(length + 1)
-            _user32.GetWindowTextW(hwnd, buf, length + 1)
-            if target in buf.value.lower():
-                found.append(hwnd)
-            return True
-
-        _user32.EnumWindows(EnumWindowsProc(cb), 0)
-        if found:
-            return auto.ControlFromHandle(found[0])
-        time.sleep(0.2)
-    return None
-
-
 def dismiss_ok_popups(window, max_passes=5, settle=0.6):
     """Walk `window`'s live tree and click any visible "OK" ButtonControl,
     repeating up to `max_passes` times in case dismissing one popup reveals

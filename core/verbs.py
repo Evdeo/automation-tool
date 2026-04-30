@@ -34,10 +34,18 @@ def double_click(window: Control, control_id: str) -> bool:
     return actions.double_press(window, control_id)
 
 
-def click_when_active(window: Control, control_id: str, timeout: float = 30) -> bool:
+def click_when_enabled(window: Control, control_id: str, timeout: float = 30) -> bool:
     """Click as soon as the control becomes enabled (e.g. a button that's
     disabled while a background task runs)."""
     return actions.press_when_active(window, control_id, timeout=timeout)
+
+
+def click_after(window: Control, control_id: str, delay: float) -> bool:
+    """Sleep for `delay` seconds, then click `control_id`. Useful when
+    you need a fixed pause before a click — collapses
+    `wait(delay); click(window, id)` into one line."""
+    _time.sleep(delay)
+    return actions.press(window, control_id)
 
 
 # --- Text input -------------------------------------------------------------

@@ -269,15 +269,6 @@ def wait_until_absent(window, tree_id, timeout=10.0):
         time.sleep(config.ACTIVE_POLL_SEC)
 
 
-def press_path(window, *tree_ids):
-    # Cascade clicks for menu/submenu chains (e.g. View → Zoom → Zoom in).
-    # Each step's element only enters the live tree after the previous click
-    # opens its parent; _resolve's retry loop bridges that gap.
-    for tid in tree_ids:
-        press(window, tid)
-    return True
-
-
 def type_text(text, interval=0.02):
     pyautogui.write(text, interval=interval)
     db.log("type", text, len(text))

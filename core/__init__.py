@@ -11,7 +11,8 @@ from core.verbs import (
     # clicks
     click,
     double_click,
-    click_when_active,
+    click_when_enabled,
+    click_after,
     # text input
     fill,
     type,
@@ -36,7 +37,7 @@ from core.verbs import (
 
 
 __all__ = [
-    "click", "double_click", "click_when_active",
+    "click", "double_click", "click_when_enabled", "click_after",
     "fill", "type", "hotkey",
     "check_visible", "check_enabled", "wait_gone", "check_color",
     "popup", "dismiss_popups",

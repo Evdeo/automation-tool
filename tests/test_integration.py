@@ -194,45 +194,6 @@ class TestResolveTimeout(WindowsUITestBase):
             config.RESOLVE_TIMEOUT_SEC = original
 
 
-class TestPressPath(WindowsUITestBase):
-    """The new press_path helper must drive a menu cascade end-to-end."""
-
-    def test_press_path_opens_view_zoom_submenu(self):
-        # Cascade File>New tab to get a clean tab for measurement
-        actions.press_path(self.win, "File:MenuItemControl", "New tab:MenuItemControl")
-        time.sleep(0.6)
-        apps.bring_to_foreground(self.win)
-
-        # Now cascade View > Zoom > Zoom in.  If any step fails to open the
-        # next, _resolve will raise TimeoutError and this test fails loudly.
-        actions.press_path(
-            self.win,
-            "View:MenuItemControl",
-            "Zoom:MenuItemControl",
-            "Zoom in:MenuItemControl",
-        )
-        # Verify the action logged: the press table should now contain the
-        # three tree_ids in the order they were pressed.
-        conn = sqlite3.connect(config.DB_PATH)
-        try:
-            rows = conn.execute(
-                "SELECT c0 FROM press ORDER BY ts"
-            ).fetchall()
-        finally:
-            conn.close()
-        ids_pressed = [r[0] for r in rows]
-        # Only assert about the three latest cascade steps — earlier File>New tab
-        # presses are also logged.
-        self.assertIn("View:MenuItemControl", ids_pressed)
-        self.assertIn("Zoom:MenuItemControl", ids_pressed)
-        self.assertIn("Zoom in:MenuItemControl", ids_pressed)
-        # And they must be in this order (View < Zoom < Zoom in)
-        self.assertLess(ids_pressed.index("View:MenuItemControl"),
-                        ids_pressed.index("Zoom:MenuItemControl"))
-        self.assertLess(ids_pressed.index("Zoom:MenuItemControl"),
-                        ids_pressed.index("Zoom in:MenuItemControl"))
-
-
 class TestClickActuallyFires(WindowsUITestBase):
     """Regression for the SendInput-vs-mouse_event WinUI bug.
 
@@ -248,13 +209,15 @@ class TestClickActuallyFires(WindowsUITestBase):
 
     def test_close_tab_menu_item_actually_closes_a_tab(self):
         # add a known-extra tab
-        actions.press_path(self.win, "File:MenuItemControl", "New tab:MenuItemControl")
+        actions.press(self.win, "File:MenuItemControl")
+        actions.press(self.win, "New tab:MenuItemControl")
         time.sleep(0.8)
         apps.bring_to_foreground(self.win)
         n_before = self._count_tabs()
 
         # close it via File > Close tab — must actually close
-        actions.press_path(self.win, "File:MenuItemControl", "Close tab:MenuItemControl")
+        actions.press(self.win, "File:MenuItemControl")
+        actions.press(self.win, "Close tab:MenuItemControl")
         time.sleep(1.5)
 
         n_after = self._count_tabs()
@@ -263,90 +226,6 @@ class TestClickActuallyFires(WindowsUITestBase):
             f"Close tab press must reduce tab count: before={n_before} after={n_after}. "
             "If this fails, actions._cursor_click probably regressed to mouse_event."
         )
-
-
-class TestInspectorRoundtrip(WindowsUITestBase):
-    """The inspector's job is to hand a human a tree_id they can paste into a
-    press / press_path call.  This test simulates the inspector for each step
-    of a View → Zoom → Zoom in cascade by:
-      1. opening the menu/submenu so the target element exists in the tree,
-      2. asking inspector._path_to() for the full path of that element,
-      3. extracting the leaf segment (name:role),
-      4. feeding the leaves into press_path() and verifying the cascade fires.
-
-    If this test passes, then a real human using the inspector by clicking
-    each menu item in turn gets paths that are usable with press_path."""
-
-    def _find_node(self, name, role):
-        walked = tree.walk_live(self.win)
-        return next(
-            (n["ctrl"] for n in walked if n["name"] == name and n["role"] == role),
-            None,
-        )
-
-    def _leaf(self, full_path):
-        # mirror the same leaf extraction tree.find uses on the fallback path
-        seg = full_path.split("/")[-1]
-        name, _, role = seg.partition(":")
-        return f"{name}:{role}"
-
-    def test_inspector_paths_drive_press_path(self):
-        # 1. Click View to open the top-level menu — Zoom MenuItem only exists
-        #    in the live tree once the View flyout is open.
-        actions.press(self.win, "View:MenuItemControl")
-        time.sleep(0.5)
-        zoom_ctrl = self._find_node("Zoom", "MenuItemControl")
-        self.assertIsNotNone(zoom_ctrl, "Zoom item must be in tree once View is open")
-        # _path_to now returns (name_path, struct_id). The roundtrip test
-        # uses the name path; struct_id is exercised separately.
-        zoom_full, _ = inspector._path_to(zoom_ctrl)
-        zoom_leaf = self._leaf(zoom_full)
-        self.assertEqual(zoom_leaf, "Zoom:MenuItemControl",
-                         f"inspector leaf should be Zoom:MenuItemControl, got {zoom_leaf!r}")
-
-        # 2. Click Zoom to expand the submenu — Zoom in only enters the tree now.
-        actions.press(self.win, "Zoom:MenuItemControl")
-        time.sleep(0.5)
-        zoomin_ctrl = self._find_node("Zoom in", "MenuItemControl")
-        self.assertIsNotNone(zoomin_ctrl, "Zoom in must be in tree once Zoom is expanded")
-        zoomin_full, _ = inspector._path_to(zoomin_ctrl)
-        zoomin_leaf = self._leaf(zoomin_full)
-        self.assertEqual(zoomin_leaf, "Zoom in:MenuItemControl",
-                         f"inspector leaf should be 'Zoom in:MenuItemControl', got {zoomin_leaf!r}")
-
-        # 3. Both inspector paths should round-trip through tree.find — both as
-        #    full path and as leaf — when the relevant submenu is open.
-        walked_now = tree.walk_live(self.win)
-        self.assertIsNotNone(tree.find(walked_now, zoomin_full),
-                             "full inspector path should resolve")
-        self.assertIsNotNone(tree.find(walked_now, zoomin_leaf),
-                             "leaf form should resolve via name+role fallback")
-
-        # Close the open menu so the next test starts clean.
-        import pyautogui
-        pyautogui.press("escape")
-        pyautogui.press("escape")
-        time.sleep(0.5)
-
-        # 4. Now feed those leaves into press_path from a closed-menu state.
-        #    If the inspector is producing usable IDs, this cascade fires.
-        actions.press_path(
-            self.win,
-            "View:MenuItemControl",
-            zoom_leaf,
-            zoomin_leaf,
-        )
-        time.sleep(0.4)
-
-        # Verify all three presses landed in the press log in order.
-        conn = sqlite3.connect(config.DB_PATH)
-        try:
-            ids = [r[0] for r in conn.execute("SELECT c0 FROM press ORDER BY ts")]
-        finally:
-            conn.close()
-        self.assertIn("View:MenuItemControl", ids)
-        self.assertIn(zoom_leaf, ids)
-        self.assertIn(zoomin_leaf, ids)
 
 
 class TestCheckActive(WindowsUITestBase):
@@ -396,40 +275,6 @@ class TestCheckActive(WindowsUITestBase):
         time.sleep(0.4)
 
 
-class TestFindDialog(WindowsUITestBase):
-    """`dialogs.find_dialog` enumerates owned top-level #32770 windows that
-    `auto.GetRootControl().GetChildren()` doesn't expose."""
-
-    def test_find_save_dialog_appears_on_ctrl_s(self):
-        # Need editable content so Ctrl+S triggers Save As.
-        actions.press_path(self.win, "File:MenuItemControl",
-                           "New tab:MenuItemControl")
-        time.sleep(0.8)
-        apps.bring_to_foreground(self.win)
-        actions.write_text(self.win, "Text editor:DocumentControl", "x")
-        time.sleep(0.3)
-
-        import pyautogui
-        pyautogui.hotkey("ctrl", "s")
-        dlg = dialogs.find_dialog("save", timeout=8)
-        try:
-            self.assertIsNotNone(dlg, "find_dialog should locate Save As")
-            self.assertEqual(dlg.ClassName, "#32770")
-            self.assertIn("save", (dlg.Name or "").lower())
-        finally:
-            # close the dialog so the test fixture tearDown is clean
-            pyautogui.press("escape")
-            time.sleep(0.5)
-
-    def test_find_dialog_returns_none_on_timeout(self):
-        t0 = time.time()
-        dlg = dialogs.find_dialog("definitely_not_a_real_title", timeout=0.5)
-        elapsed = time.time() - t0
-        self.assertIsNone(dlg)
-        self.assertLess(elapsed, 1.5,
-                        "find_dialog must honour its timeout argument")
-
-
 class TestDismissOkPopups(WindowsUITestBase):
     def test_no_popups_returns_zero(self):
         # Fresh Notepad has no OK-button popup up. (The setUp dismisses any
@@ -442,8 +287,8 @@ class TestSaveAs(WindowsUITestBase):
     """`dialogs.save_as` drives the Save As dialog end-to-end."""
 
     def test_save_as_writes_to_target_path(self):
-        actions.press_path(self.win, "File:MenuItemControl",
-                           "New tab:MenuItemControl")
+        actions.press(self.win, "File:MenuItemControl")
+        actions.press(self.win, "New tab:MenuItemControl")
         time.sleep(0.8)
         apps.bring_to_foreground(self.win)
         text = "save_as_test_payload"
@@ -455,8 +300,9 @@ class TestSaveAs(WindowsUITestBase):
             target.unlink()
 
         import pyautogui
+        from core import app as app_mod
         pyautogui.hotkey("ctrl", "s")
-        dlg = dialogs.find_dialog("save", timeout=8)
+        dlg = app_mod.popup(self.win, "save", timeout=8)
         self.assertIsNotNone(dlg)
         dialogs.save_as(dlg, target)
 
