@@ -165,14 +165,16 @@ def _inspect(x, y):
         print(f"** baseline captured: {tree.snapshot_path(win)}")
 
     _, _, struct_id = _path_to(win, x, y)
-    # Two paste-ready strings: the window title for apps.get_window(TITLE)
-    # at the top of run.py, and the struct_id for the constant assignment
-    # the user names themselves (e.g. `scan = "0.14.2"`). Everything else
-    # the inspector used to print is noise for that workflow. Mirrored
-    # to data/inspector.txt so the user can grab the day's clicks
-    # in one paste at the end.
+    # Three paste-ready strings:
+    #  - window: live title -- usable as-is when stable, or a substring
+    #    works since apps.get_window() does substring matching.
+    #  - process: executable stem, rock-solid across iterations when
+    #    the live title drifts (run counters, document filenames,
+    #    instrument serials). Use as the substring fallback.
+    #  - struct_id: pasted into run.py as `scan = "0.14.2"` etc.
     _emit("-" * 60)
     _emit(f'window    : "{tree._name(win)}"')
+    _emit(f'process   : "{tree._process_stem(win)}"')
     _emit(f'struct_id : "{struct_id}"')
 
 
