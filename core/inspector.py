@@ -11,12 +11,32 @@ if __name__ == "__main__" and __package__ is None:
 
 import queue
 import threading
+import time
+import traceback
 
 import pyautogui
 import uiautomation as auto
 from pynput import mouse
 
 from core import tree
+
+
+# Decoded HRESULTs we surface explicitly so the message tells the
+# user *which* COM precondition tripped, not just the bare number.
+_HRESULTS = {
+    -2147417843: "RPC_E_CANTCALLOUT_ININPUTSYNCCALL",  # 0x8001010D
+    -2147418111: "RPC_E_CALL_REJECTED",                 # 0x80010001
+    -2147417835: "RPC_E_SERVERCALL_RETRYLATER",         # 0x8001010A
+    -2147023174: "RPC_S_SERVER_UNAVAILABLE",            # 0x800706BA
+    -2147221008: "CO_E_NOTINITIALIZED",                 # 0x800401F0
+}
+
+
+def _hresult_name(exc):
+    args = getattr(exc, "args", ())
+    if args and isinstance(args[0], int):
+        return _HRESULTS.get(args[0])
+    return None
 
 
 # Mouse-hook callbacks fire on pynput's listener thread *while Windows is
@@ -95,19 +115,36 @@ def _path_to(element):
     return name_path, struct_id
 
 
-def _inspect(x, y):
-    ctrl = auto.ControlFromPoint(x, y)
+def _step(label, fn, *args, **kwargs):
+    """Run `fn(*args)` while logging which step is in flight + how
+    long it took. On exception, the surrounding try/except prints
+    the label so we know *which* COM call tripped without having
+    to read line numbers off a traceback."""
+    t0 = time.perf_counter()
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        dt = (time.perf_counter() - t0) * 1000
+        print(f"  [step] {label}: {dt:.1f} ms")
+
+
+def _inspect(x, y, click_id):
+    th = threading.current_thread().name
+    print(f"[click #{click_id}] worker={th} coords=({x},{y}) "
+          f"queue_depth={_clicks.qsize()}")
+
+    ctrl = _step("ControlFromPoint", auto.ControlFromPoint, x, y)
     if ctrl is None:
         print(f"[{x},{y}] no element under cursor")
         return
 
-    win = _top_window(ctrl)
-    _, created = tree.ensure_snapshot(win)
+    win = _step("_top_window", _top_window, ctrl)
+    _, created = _step("ensure_snapshot", tree.ensure_snapshot, win)
     if created:
         print(f"** baseline captured: {tree.snapshot_path(win)}")
 
-    tid, struct_id = _path_to(ctrl)
-    rect = ctrl.BoundingRectangle
+    tid, struct_id = _step("_path_to", _path_to, ctrl)
+    rect = _step("BoundingRectangle", lambda: ctrl.BoundingRectangle)
     cx = (rect.left + rect.right) // 2
     cy = (rect.top + rect.bottom) // 2
     try:
@@ -131,25 +168,54 @@ def _worker():
     # and keeps the apartment alive for the program's lifetime, so
     # uiautomation's IUIAutomation singleton stays valid across all
     # clicks. See module-level comment.
+    th = threading.current_thread().name
+    print(f"[worker] starting on {th}")
     with auto.UIAutomationInitializerInThread(debug=False):
         # Force singleton creation on THIS thread (not on whatever
         # thread happens to make the first UIA call later).
         auto.GetRootControl()
+        print(f"[worker] UIA initialized on {th}, ready")
+        click_id = 0
         while True:
             item = _clicks.get()
             if item is None:
                 return
-            x, y = item
+            click_id += 1
+            x, y, t_enq = item
+            latency = (time.perf_counter() - t_enq) * 1000
+            print(f"[click #{click_id}] dequeued after {latency:.1f} ms")
             try:
-                _inspect(x, y)
+                _inspect(x, y, click_id)
             except Exception as e:
-                print(f"inspector error: {e}")
+                hres = _hresult_name(e)
+                tag = f" [{hres}]" if hres else ""
+                print(f"[click #{click_id}] inspector error{tag}: "
+                      f"{type(e).__name__}: {e}")
+                traceback.print_exc()
+                if hres == "RPC_E_CANTCALLOUT_ININPUTSYNCCALL":
+                    # If this fires from our long-lived MTA-or-STA worker,
+                    # the input-sync state must be on the *target* app's
+                    # UI thread (the WPF app dispatching its own click).
+                    # Probe by retrying after a short backoff: if it now
+                    # succeeds, we've identified the cause and can build
+                    # in retry. If it still fails, the cause is on our
+                    # side and the worker apartment isn't actually clean.
+                    print(f"[click #{click_id}] retry probe in 250 ms…")
+                    time.sleep(0.25)
+                    try:
+                        _inspect(x, y, click_id)
+                        print(f"[click #{click_id}] retry SUCCEEDED — "
+                              "input-sync was in the target app, not us")
+                    except Exception as e2:
+                        hres2 = _hresult_name(e2)
+                        print(f"[click #{click_id}] retry also failed "
+                              f"[{hres2 or '?'}]: {e2}")
 
 
 def _on_click(x, y, button, pressed):
     if not pressed or button != mouse.Button.left:
         return
-    _clicks.put((x, y))
+    _clicks.put((x, y, time.perf_counter()))
 
 
 def run():
