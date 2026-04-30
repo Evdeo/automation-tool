@@ -24,7 +24,9 @@ from core import tree
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _LOG_PATH = _PROJECT_ROOT / "data" / "inspector.txt"
+_STEPS_DIR = _PROJECT_ROOT / "data" / "inspector_steps"
 _log_file = None
+_step_counter = 0
 
 # Process scope: clicks outside this exe are silently ignored.
 # None = "lock in on first valid click". After lock-in this becomes
@@ -161,7 +163,7 @@ def _inspect(x, y):
     if created:
         _emit(f"** baseline captured: {tree.snapshot_path(win)}")
 
-    _, name_path, struct_id = _path_to(win, x, y)
+    leaf, name_path, struct_id = _path_to(win, x, y)
 
     # Suppress consecutive duplicates per window so drag / double-click
     # / repeat clicks on the same control don't spam the log.
@@ -176,10 +178,40 @@ def _inspect(x, y):
         "win_stem": win_stem,
     })
 
+    _save_step_screenshot(leaf, struct_id)
+
     _emit("-" * 60)
     _emit(f'window    : "{tree._name(win)}"')
     _emit(f'process   : "{tree._process_stem(win)}"')
     _emit(f'struct_id : "{struct_id}"')
+
+
+def _save_step_screenshot(leaf_ctrl, struct_id):
+    """Capture the full screen and outline the clicked element in red.
+    Saved as data/inspector_steps/step_NNN_<struct_id>.png so each click
+    has a visual breadcrumb you can use to label the constants later."""
+    global _step_counter
+    _step_counter += 1
+    try:
+        import pyautogui
+        from PIL import ImageDraw
+        r = leaf_ctrl.BoundingRectangle
+        if r.right - r.left <= 0 or r.bottom - r.top <= 0:
+            return
+        img = pyautogui.screenshot()
+        draw = ImageDraw.Draw(img)
+        draw.rectangle(
+            [r.left, r.top, r.right, r.bottom],
+            outline="red",
+            width=4,
+        )
+        safe_id = struct_id.replace(".", "_")
+        path = _STEPS_DIR / f"step_{_step_counter:03d}_{safe_id}.png"
+        img.save(path)
+    except Exception as e:
+        # Screenshots are a debugging convenience — never let a failure
+        # here break the inspector's primary capture loop.
+        print(f"inspector: screenshot for step {_step_counter} skipped ({e})")
 
 
 _TRANSIENT_HRESULTS = {
@@ -319,13 +351,24 @@ def _emit_session_block():
 
 
 def run(scope=None):
-    global _log_file, _scope_stem
+    global _log_file, _scope_stem, _step_counter
 
     if scope:
         stem = scope.rsplit(".", 1)[0] if "." in scope else scope
         _scope_stem = stem.lower()
 
     _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Fresh inspector_steps/ each session so screenshot numbering starts
+    # at 001 and stale shots from prior runs don't pollute the dir.
+    if _STEPS_DIR.exists():
+        for old in _STEPS_DIR.glob("step_*.png"):
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    _STEPS_DIR.mkdir(parents=True, exist_ok=True)
+    _step_counter = 0
     print("Inspector running. Left-click any element. Ctrl+C to quit.")
     if _scope_stem:
         print(f"Pre-bound to process: {_scope_stem}.exe")

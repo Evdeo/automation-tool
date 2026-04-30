@@ -3,20 +3,22 @@
 Multi-app:  APPS = {"notepad": "notepad.exe", "calc": "calc.exe"}
             then click(data.notepad, ...), click(data.calc, ...).
 
-Every verb is a top-level function taking the window first:
+Every verb is a top-level function taking the window first
+(except `type`, which has no window — it just sends keys to current
+focus, useful when a dialog opens with a field already selected):
     click(window, control_id)         single click
     double_click(window, control_id)
-    fill(window, control_id, text)    paste text into a field
-    keys(window, "hello")             type at current focus
+    fill(window, control_id, text)    click + paste text into a field
+    type("hello")                     type at current focus (no click)
     hotkey(window, "ctrl", "s")       send a key combo
-    has(window, control_id)           is it visible?
+    check_visible(window, control_id) is it visible?
     check_enabled(window, control_id) is it visible AND enabled?
     check_color(window, control_id)   pixel sample, returns (r, g, b)
     wait_gone(window, control_id)     wait until it disappears
     popup(window, "title")            find a sub-window/dialog → returns control
     save_as(window, path)             full Save flow in one call
     screenshot(window, path)          PNG of the window
-    keys / hotkey / wait / now / log / close
+    wait, now, log, close
 
 Each state function takes `data` and returns `(next_state, data)`.
 Returning `(None, data)` ends the run. Each state should perform one

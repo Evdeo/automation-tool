@@ -49,10 +49,12 @@ def fill(window: Control, control_id: str, text: str) -> bool:
     return actions.write_text(window, control_id, text)
 
 
-def keys(window: Control, text: str, interval: float = 0.02) -> None:
-    """Type `text` letter-by-letter into the focused control. Auto-
-    foregrounds `window` first."""
-    apps.bring_to_foreground(window)
+def type(text: str, interval: float = 0.02) -> None:
+    """Type `text` letter-by-letter into whatever currently has keyboard
+    focus. No window argument — does NOT click or change focus. Use
+    when a field is already focused (e.g. when a dialog opens with its
+    primary input pre-selected). For targeting a specific control, use
+    `fill(window, id, text)` instead."""
     pyautogui.write(text, interval=interval)
 
 
@@ -66,7 +68,7 @@ def hotkey(window: Control, *combo: str) -> None:
 # --- Checks / waits ---------------------------------------------------------
 
 
-def has(window: Control, control_id: str, timeout: float = 0) -> bool:
+def check_visible(window: Control, control_id: str, timeout: float = 0) -> bool:
     """True if the control is visible within `timeout` seconds."""
     return actions.is_present(window, control_id, timeout=timeout)
 

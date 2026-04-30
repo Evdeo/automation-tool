@@ -10,6 +10,7 @@ data/runs.db
 data/snapshots/
 data/results/
 data/inspector.txt
+data/inspector_steps/
 data/notepad_demo.txt
 data/*.png
 

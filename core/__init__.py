@@ -14,10 +14,10 @@ from core.verbs import (
     click_when_active,
     # text input
     fill,
-    keys,
+    type,
     hotkey,
     # checks / waits
-    has,
+    check_visible,
     check_enabled,
     wait_gone,
     check_color,
@@ -37,8 +37,8 @@ from core.verbs import (
 
 __all__ = [
     "click", "double_click", "click_when_active",
-    "fill", "keys", "hotkey",
-    "has", "check_enabled", "wait_gone", "check_color",
+    "fill", "type", "hotkey",
+    "check_visible", "check_enabled", "wait_gone", "check_color",
     "popup", "dismiss_popups",
     "save_as", "screenshot", "close",
     "now", "wait", "log",

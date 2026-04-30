@@ -269,11 +269,6 @@ def wait_until_absent(window, tree_id, timeout=10.0):
         time.sleep(config.ACTIVE_POLL_SEC)
 
 
-def press_after_delay(window, tree_id, delay):
-    time.sleep(delay)
-    return press(window, tree_id)
-
-
 def press_path(window, *tree_ids):
     # Cascade clicks for menu/submenu chains (e.g. View → Zoom → Zoom in).
     # Each step's element only enters the live tree after the previous click
