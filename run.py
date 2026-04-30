@@ -2,9 +2,16 @@
 
 State machine: open → new_tab → zoom_in → (5s) → zoom_out → (5s) →
 type_time → save → close. Each state function returns the name of the
-next state (or None to end the pass). `ctx` is a per-pass dict — use it
-to share state between functions (e.g. `ctx["window"]` is the Notepad
-window every later state operates on).
+next state (or None to end the pass). `ctx` is a per-pass dict for
+sharing state between functions when needed.
+
+# Declaring the windows you'll address
+
+`WINDOWS` (below) is the single declaration of every window this script
+talks to. Each value is a title-substring; pass `WINDOWS["main"]`
+straight into any `actions.*` / `dialogs.*` call — they accept either a
+Control or a title string and resolve+cache internally. No
+`apps.get_window` calls in state functions, no `ctx["window"]` ceremony.
 
 # Addressing controls — two schemes both work via `actions.press(window, id)`
 
@@ -49,7 +56,27 @@ from core import actions, apps, db, dialogs, runner
 
 
 NOTEPAD = "notepad.exe"
-TITLE = "Notepad"
+
+# ---------------------------------------------------------------------------
+# Windows this script addresses — one line per window, single dict.
+# ---------------------------------------------------------------------------
+# Values are title substrings (case-sensitive contains-match against the
+# desktop's top-level windows). `actions.*` and `dialogs.dismiss_ok_popups`
+# both accept either a Control or one of these strings, so state functions
+# pass `WINDOWS["main"]` directly — no `apps.get_window` boilerplate, no
+# `ctx["window"]` plumbing.
+#
+# When the inspector tells you a control lives in a different top-level
+# window, add an entry here and reference it. If you pass the wrong
+# window for a struct_id, the resolver's TimeoutError now lists every
+# sibling window of the same process and tells you which one DOES contain
+# the id — so picking the right key is a one-line fix.
+# ---------------------------------------------------------------------------
+WINDOWS = {
+    "main": "Notepad",
+    # "save": "Save As",   # uncomment + use when addressing the Save dialog
+}
+
 # Per-run output: a fresh timestamped folder under config.RESULTS_DIR,
 # with the generic filename. Computed once at import so a single state
 # machine pass writes into one folder; the --loop mode respawns the
@@ -110,39 +137,37 @@ KILL_ON_TIMEOUT = [NOTEPAD]
 def state_open(ctx):
     if not apps.is_running(NOTEPAD):
         apps.open_app(NOTEPAD)
-    win = apps.get_window(TITLE)
     # No explicit bring_to_foreground here — actions / dialogs.dismiss_ok_popups
     # do it automatically. The first auto-foreground happens inside
     # dismiss_ok_popups below.
-    dialogs.dismiss_ok_popups(win)
-    ctx["window"] = win
-    db.log("results", "opened", win.Name)
+    dialogs.dismiss_ok_popups(WINDOWS["main"])
+    db.log("results", "opened", WINDOWS["main"])
     return "new_tab"
 
 
 def state_new_tab(ctx):
-    actions.press_path(ctx["window"], FILE_MENU, NEW_TAB)
+    actions.press_path(WINDOWS["main"], FILE_MENU, NEW_TAB)
     db.log("results", "new_tab", 1)
     return "zoom_in"
 
 
 def state_zoom_in(ctx):
     time.sleep(5.0)  # demo pacing — user-visible
-    actions.press_path(ctx["window"], VIEW_MENU, ZOOM, ZOOM_IN)
+    actions.press_path(WINDOWS["main"], VIEW_MENU, ZOOM, ZOOM_IN)
     db.log("results", "zoom_in", 1)
     return "zoom_out"
 
 
 def state_zoom_out(ctx):
     time.sleep(5.0)  # demo pacing — user-visible
-    actions.press_path(ctx["window"], VIEW_MENU, ZOOM, ZOOM_OUT)
+    actions.press_path(WINDOWS["main"], VIEW_MENU, ZOOM, ZOOM_OUT)
     db.log("results", "zoom_out", 1)
     return "type_time"
 
 
 def state_type_time(ctx):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    actions.write_text(ctx["window"], EDITOR, now)
+    actions.write_text(WINDOWS["main"], EDITOR, now)
     ctx["written_text"] = now
     db.log("results", "wrote_time", now)
     return "save"
@@ -157,7 +182,7 @@ def state_save(ctx):
     if dlg is None:
         raise RuntimeError("Save As dialog did not appear")
     dialogs.save_as(dlg, SAVE_PATH)
-    actions.wait_until_absent(ctx["window"], SAVE_DLG_FILENAME, timeout=10)
+    actions.wait_until_absent(WINDOWS["main"], SAVE_DLG_FILENAME, timeout=10)
     # No bring_to_foreground here either — state_close's first press_path
     # auto-foregrounds the Notepad window through actions._resolve.
     db.log("results", "saved", str(SAVE_PATH))
@@ -165,8 +190,8 @@ def state_save(ctx):
 
 
 def state_close(ctx):
-    dialogs.dismiss_ok_popups(ctx["window"])
-    actions.press_path(ctx["window"], FILE_MENU, CLOSE_TAB)
+    dialogs.dismiss_ok_popups(WINDOWS["main"])
+    actions.press_path(WINDOWS["main"], FILE_MENU, CLOSE_TAB)
     db.log("results", "closed", 1)
     return None
 

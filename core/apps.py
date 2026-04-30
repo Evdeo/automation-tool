@@ -97,3 +97,54 @@ def get_window(title=None):
             if isinstance(w, auto.WindowControl) and w.Name and title in w.Name:
                 return w
         time.sleep(config.DRIFT_RETRY_BACKOFF_SEC)
+
+
+_window_cache = {}
+
+
+def window(title_or_control):
+    """Resolve a window title (string) to a live Control, caching the result.
+
+    Idempotent — a Control passes through unchanged. The cache lets every
+    `actions.*` / `dialogs.*` call site accept the same WINDOWS["main"]
+    string without re-walking the desktop on each call. Stale cache
+    entries (window closed) are detected via `Exists(0, 0)` and
+    re-resolved transparently.
+    """
+    if not isinstance(title_or_control, str):
+        return title_or_control
+    title = title_or_control
+    cached = _window_cache.get(title)
+    if cached is not None:
+        try:
+            if cached.Exists(0, 0):
+                return cached
+        except Exception:
+            pass
+    win = get_window(title)
+    _window_cache[title] = win
+    return win
+
+
+def _other_top_windows(window):
+    """Sibling top-level windows of the same process. Used by the
+    resolver's failure-path diagnostic to point the user at a window
+    that DOES contain a struct_id they pasted."""
+    try:
+        pid = window.ProcessId
+        my_handle = window.NativeWindowHandle
+    except AttributeError:
+        return []
+    out = []
+    for w in auto.GetRootControl().GetChildren():
+        if not isinstance(w, auto.WindowControl):
+            continue
+        try:
+            if w.ProcessId != pid:
+                continue
+            if w.NativeWindowHandle == my_handle:
+                continue
+        except Exception:
+            continue
+        out.append(w)
+    return out

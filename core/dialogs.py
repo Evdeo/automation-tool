@@ -62,10 +62,14 @@ def dismiss_ok_popups(window, max_passes=5, settle=0.6):
     repeating up to `max_passes` times in case dismissing one popup reveals
     another. Returns the number of clicks fired.
 
+    `window` may be either a Control or a window-title string (resolved
+    via the same cache as `actions.*`).
+
     Uses `actions._cursor_click` (SendInput-based) — `pyautogui.click` does
     NOT register on WinUI popup buttons (same root cause as the menu-item
     no-op fix; this helper used to silently do nothing on modern Notepad).
     """
+    window = apps.window(window)
     apps.bring_to_foreground(window)
     dismissed = 0
     for _ in range(max_passes):

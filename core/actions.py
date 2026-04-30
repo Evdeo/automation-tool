@@ -132,7 +132,65 @@ def _check_drift(window, walked, snap=None):
     )
 
 
+def _diagnose_misses(window, tree_id):
+    """Walk every other top-level window of the same process and report
+    which (if any) contain `tree_id`. Called only on the resolver
+    timeout path, so the cost is paid once per real failure.
+
+    Output is a list of human-readable lines for inclusion in the
+    TimeoutError message — converts a mystery miss into actionable
+    info: which window the id was actually rooted in, so the user
+    can pick the right key from their WINDOWS dict.
+    """
+    others = apps._other_top_windows(window)
+    if not others:
+        return []
+    is_struct = tree._is_struct_id(tree_id)
+    leaf_name = leaf_role = None
+    if not is_struct:
+        leaf = tree_id.split(tree._SEP)[-1]
+        leaf_name, _, leaf_role = leaf.partition(tree._ROLE_SEP)
+    lines = []
+    for w in others:
+        try:
+            walked = tree.walk_live(w)
+        except Exception:
+            continue
+        match = None
+        if is_struct:
+            match = next(
+                (n for n in walked if n.get("struct_id") == tree_id),
+                None,
+            )
+        else:
+            match = next(
+                (n for n in walked if n["tree_id"] == tree_id),
+                None,
+            )
+            if match is None and leaf_name and not leaf_name.startswith("#"):
+                match = next(
+                    (n for n in walked
+                     if n["name"] == leaf_name and n["role"] == leaf_role),
+                    None,
+                )
+        wname = (w.Name or "").strip() or "<unnamed>"
+        if match is not None:
+            lines.append(
+                f'  - "{wname}": {match.get("struct_id", "?")} -> '
+                f'{match["role"]} name="{match["name"]}"'
+            )
+        else:
+            lines.append(f'  - "{wname}": no match')
+    return lines
+
+
 def _resolve(window, tree_id):
+    # Accept either a Control or a window-title string. apps.window is
+    # idempotent for Controls and caches per-title resolutions, so
+    # callers can pass `WINDOWS["main"]` (a string) on every action
+    # call without re-walking the desktop each time.
+    window = apps.window(window)
+
     # Auto-foreground: every action ensures its window is on top before
     # clicking. Cheap (early-return when already foreground); removes
     # the burden from user code so state functions don't have to call
@@ -165,7 +223,21 @@ def _resolve(window, tree_id):
                 return element, center
         db.log("missing", tree.snapshot_key(window), tree_id)
         if time.time() > deadline:
-            raise TimeoutError(f"could not resolve {tree_id} within {config.RESOLVE_TIMEOUT_SEC}s")
+            wname = (window.Name or "").strip() or "<unnamed>"
+            base = (
+                f'could not resolve "{tree_id}" in window "{wname}" '
+                f'within {config.RESOLVE_TIMEOUT_SEC}s'
+            )
+            extras = _diagnose_misses(window, tree_id)
+            if not extras:
+                raise TimeoutError(base)
+            raise TimeoutError(
+                base
+                + ".\n\nSearched other top-level windows of the same process:\n"
+                + "\n".join(extras)
+                + "\n\nIf one of those rows shows a match, pass that window's "
+                  "title (or its WINDOWS[...] entry) instead."
+            )
         time.sleep(config.DRIFT_RETRY_BACKOFF_SEC)
 
 
