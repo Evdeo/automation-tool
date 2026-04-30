@@ -17,16 +17,14 @@ def open_app(path_or_name):
     return subprocess.Popen(path_or_name, shell=False)
 
 
-def verify_installed(required):
-    """Pre-flight: confirm every (path, title) entry's launch path is
-    reachable. Resolved via shutil.which for bare names (PATH lookup
-    handles things like "notepad.exe" -> System32) and Path.exists for
-    anything that looks like a directory path. Collects ALL misses
-    into one error so the user fixes them in a single edit instead of
-    one-at-a-time. Title is unused here -- it can only be verified
-    when the app is actually running, which get_window() handles."""
+def verify_installed(paths):
+    """Pre-flight: confirm every launch path is reachable. Resolved
+    via shutil.which for bare names (PATH lookup handles things like
+    "notepad.exe" -> System32) and Path.exists for anything that
+    looks like a directory path. Collects ALL misses into one error
+    so the user fixes them in a single edit instead of one-at-a-time."""
     missing = []
-    for path, _title in required:
+    for path in paths:
         p = Path(path)
         # Treat anything with a separator OR drive letter as a literal
         # filesystem path; bare names (e.g. "notepad.exe") fall through

@@ -60,15 +60,13 @@ SAVE_PATH = (
     / config.RESULT_FILENAME
 ).resolve()
 
-# Pre-flight inventory: (launch path, window-title substring) for every
-# app this script depends on. apps.verify_installed() runs through this
-# at startup and raises a single error listing any missing paths -- so
-# you fix them all in one edit instead of crashing mid-run on the first
+# Pre-flight inventory: launch paths for every app this script
+# depends on. apps.verify_installed() runs through this at startup
+# and raises a single error listing any missing paths -- so you fix
+# them all in one edit instead of crashing mid-run on the first
 # subprocess.Popen. For installed software the launch path is usually
 # a full path, e.g. r"C:\Program Files\ValSuite\ValSuitePro.exe".
-REQUIRED_APPS = [
-    (NOTEPAD, TITLE),
-]
+REQUIRED_APPS = [NOTEPAD]
 
 # ---------------------------------------------------------------------------
 # Element identifiers
