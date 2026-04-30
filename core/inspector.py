@@ -26,7 +26,13 @@ from core import tree
 # struct_ids they want at the end without scrolling past stale
 # state. Errors / baseline notes are deliberately NOT written to
 # this file; only the lines you'd actually paste into run.py.
-_LOG_PATH = Path("data/inspector.txt")
+#
+# Anchored to the project root (parent of `core/`) so the file
+# lands in <project>/data/inspector.txt regardless of where the
+# inspector was launched from -- otherwise `python core/inspector.py`
+# from a parent shell would silently scatter `data/` directories.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_LOG_PATH = _PROJECT_ROOT / "data" / "inspector.txt"
 _log_file = None
 
 
