@@ -97,7 +97,15 @@ _SYSTEM_WINDOW_CLASSES = frozenset({
     "WindowsTerminal",                                   # Win Terminal
     "CASCADIA_HOSTING_WINDOW_CLASS",                     # Win Terminal host
     "mintty",                                            # Git Bash
+    # Browsers / Electron — protect Chrome / Edge / Brave / Firefox /
+    # Electron-based desktop apps (Slack, VS Code, Discord, Spotify…)
+    # so coordinate-based clicks via `web_coords` + `click_at` don't
+    # let another verb's pre-dismiss close the host browser window.
+    "Chrome_WidgetWin_1",                                # Chromium + Electron
+    "Chrome_WidgetWin_0",                                # variant
+    "MozillaWindowClass",                                # Firefox
 })
+
 
 _SYSTEM_PROCESS_NAMES = frozenset({
     "explorer.exe", "dwm.exe", "winlogon.exe", "csrss.exe",
@@ -380,6 +388,65 @@ def hold_and_drag(window: Control, src_id: str, dst_id: str) -> bool:
     controls must be resolvable in `window`'s tree at call time.
     """
     return actions.drag(window, src_id, dst_id)
+
+
+# --- Coordinate-based variants (no UIA resolution) ------------------------
+#
+# Bypass `_resolve` and act on raw OS screen (x, y). Use when the target
+# isn't in the UIA tree — most commonly a DOM element on a Playwright
+# page (combine with `web_coords` below), but also image-search hits or
+# hard-coded positions. Caller is responsible for putting the target
+# window in front first; for Playwright that's `page.bring_to_front()`.
+
+
+@_action_verb_no_window
+def click_at(x: int, y: int) -> None:
+    """Click at OS screen coordinates `(x, y)`."""
+    actions._cursor_click(x, y)
+
+
+@_action_verb_no_window
+def move_at(x: int, y: int) -> None:
+    """Move the cursor to OS screen coordinates `(x, y)` without clicking."""
+    actions._cursor_move(x, y)
+
+
+@_action_verb_no_window
+def hold_and_drag_at(x1: int, y1: int, x2: int, y2: int) -> None:
+    """Press at `(x1, y1)`, drag to `(x2, y2)`, release."""
+    actions._cursor_drag(x1, y1, x2, y2)
+
+
+def web_coords(page, selector):
+    """Screen `(x, y)` center of the DOM element matching `selector` on
+    a Playwright `page`, or `None` if no such element.
+
+    Translates the element's viewport-relative
+    `getBoundingClientRect()` into absolute OS coordinates by adding
+    the browser window's `screenX/Y` plus the chrome (toolbar/tabs)
+    offset. The returned tuple feeds straight into `click_at`,
+    `move_at`, or `hold_and_drag_at` — Playwright handles the part
+    it's actually good at (DOM-aware element finding on dynamic
+    pages) while OS-level click delivery stays in the framework.
+
+    Caveats:
+      - Browser must be visible. Call `page.bring_to_front()` first
+        (Playwright headless mode won't work — no on-screen window).
+      - Coords go stale if the page scrolls between the call and the
+        click. Re-query immediately before clicking.
+      - DPI scaling: if Windows is at 125%/150% display scale and
+        Playwright reports CSS pixels, the result drifts. Apply a
+        `devicePixelRatio` multiply if that becomes an issue.
+    """
+    return page.evaluate("""(sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        const dx = window.screenX + (window.outerWidth - window.innerWidth) / 2;
+        const dy = window.screenY + (window.outerHeight - window.innerHeight);
+        return [Math.round(r.x + r.width / 2 + dx),
+                Math.round(r.y + r.height / 2 + dy)];
+    }""", selector)
 
 
 # --- Text input -------------------------------------------------------------

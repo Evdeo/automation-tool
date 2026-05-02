@@ -17,6 +17,11 @@ from core.verbs import (
     click_after,
     move,
     hold_and_drag,
+    # coord-based variants (raw screen x,y — for Playwright via web_coords)
+    click_at,
+    move_at,
+    hold_and_drag_at,
+    web_coords,
     # text input
     fill,
     type,
@@ -51,6 +56,7 @@ from core.verbs import (
 
 __all__ = [
     "click", "double_click", "right_click", "click_when_enabled", "click_after", "move", "hold_and_drag",
+    "click_at", "move_at", "hold_and_drag_at", "web_coords",
     "fill", "type", "key", "hotkey",
     "is_visible", "is_enabled", "is_color", "check_color",
     "wait_visible", "wait_enabled", "wait_gone",

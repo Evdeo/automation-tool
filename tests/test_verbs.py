@@ -296,6 +296,21 @@ class TestClickFamily(unittest.TestCase):
             )
         md.assert_called_once_with(self.win, "SRC_ID", "DST_ID")
 
+    def test_click_at_delegates_to_cursor_click(self):
+        with mock.patch.object(verbs.actions, "_cursor_click") as mc:
+            verbs.click_at(123, 456)
+        mc.assert_called_once_with(123, 456)
+
+    def test_move_at_delegates_to_cursor_move(self):
+        with mock.patch.object(verbs.actions, "_cursor_move") as mm:
+            verbs.move_at(123, 456)
+        mm.assert_called_once_with(123, 456)
+
+    def test_hold_and_drag_at_delegates_to_cursor_drag(self):
+        with mock.patch.object(verbs.actions, "_cursor_drag") as md:
+            verbs.hold_and_drag_at(10, 20, 100, 200)
+        md.assert_called_once_with(10, 20, 100, 200)
+
     def test_click_after_sleeps_then_presses(self):
         with mock.patch.object(verbs.actions, "press",
                                return_value=True) as mp:
@@ -304,6 +319,40 @@ class TestClickFamily(unittest.TestCase):
         elapsed = time.time() - t0
         self.assertGreaterEqual(elapsed, 0.04)
         mp.assert_called_once_with(self.win, "BTN_ID")
+
+
+class TestWebCoords(unittest.TestCase):
+    """`web_coords` is a thin wrapper around Playwright's
+    `page.evaluate` — verify it shapes the JS query and returns
+    whatever evaluate produces. We don't mock the JS evaluation
+    itself; that's Playwright's job."""
+
+    def test_calls_page_evaluate_with_selector(self):
+        page = mock.MagicMock()
+        page.evaluate.return_value = [100, 200]
+        result = verbs.web_coords(page, "button.save")
+        self.assertEqual(result, [100, 200])
+        # First arg is JS source; second is the selector forwarded as-is.
+        args, _ = page.evaluate.call_args
+        self.assertIn("getBoundingClientRect", args[0])
+        self.assertEqual(args[1], "button.save")
+
+    def test_returns_none_when_element_not_found(self):
+        page = mock.MagicMock()
+        page.evaluate.return_value = None
+        self.assertIsNone(verbs.web_coords(page, "nope"))
+
+
+class TestSystemWindowClassesProtectsBrowsers(unittest.TestCase):
+    """Browser window classes must be in the system skip list so that
+    coordinate-based clicks via Playwright don't let another verb's
+    pre-dismiss accidentally close the host browser window."""
+
+    def test_chrome_class_is_protected(self):
+        self.assertIn("Chrome_WidgetWin_1", verbs._SYSTEM_WINDOW_CLASSES)
+
+    def test_firefox_class_is_protected(self):
+        self.assertIn("MozillaWindowClass", verbs._SYSTEM_WINDOW_CLASSES)
 
 
 # --- Text input -------------------------------------------------------------
