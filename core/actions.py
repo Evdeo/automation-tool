@@ -308,6 +308,16 @@ def write_text(window, tree_id, text, settle=0.1):
 def get_color(window, tree_id, x_offset=0, y_offset=0):
     _, (x, y) = _resolve(window, tree_id)
     px, py = x + x_offset, y + y_offset
-    color = pyautogui.pixel(px, py)
+    try:
+        color = pyautogui.pixel(px, py)
+    except (OverflowError, ctypes.ArgumentError):
+        # pyscreeze.pixel calls gdi32.GetPixel without setting argtypes,
+        # so on Python 3.14 + 64-bit Windows the HDC argument overflows
+        # ctypes' default c_int. Fall back to a 1-pixel screenshot via
+        # PIL — slightly slower but universally reliable.
+        from PIL import ImageGrab
+        img = ImageGrab.grab(bbox=(px, py, px + 1, py + 1))
+        color = img.getpixel((0, 0))
+    color = tuple(color)[:3]
     db.log("color", tree_id, px, py, list(color))
-    return tuple(color)
+    return color

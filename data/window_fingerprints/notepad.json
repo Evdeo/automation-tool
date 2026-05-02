@@ -1,0 +1,17 @@
+{
+  "fingerprint": [
+    [
+      0,
+      "WindowControl"
+    ],
+    [
+      1,
+      "MenuBarControl"
+    ]
+  ],
+  "hints": {
+    "title_hint": "Notepad",
+    "is_app": true,
+    "spec": "notepad.exe"
+  }
+}

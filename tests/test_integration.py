@@ -15,11 +15,12 @@ import unittest
 from pathlib import Path
 
 import psutil
+import uiautomation as auto
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config  # noqa: E402
-from core import actions, apps, db, dialogs, tree  # noqa: E402
+from core import actions, apps, db, tree  # noqa: E402
 
 
 def _kill_notepad():
@@ -275,43 +276,75 @@ class TestCheckActive(WindowsUITestBase):
         time.sleep(0.4)
 
 
-class TestDismissOkPopups(WindowsUITestBase):
-    def test_no_popups_returns_zero(self):
-        # Fresh Notepad has no OK-button popup up. (The setUp dismisses any
-        # session-restore "Cannot find file" prompt, so we start clean.)
-        n = dialogs.dismiss_ok_popups(self.win, max_passes=2)
-        self.assertEqual(n, 0)
+class TestPopupDismissDuringEach(WindowsUITestBase):
+    """`each()` snapshots HWNDs at entry and pre-dismisses any
+    unexpected top-level window. Spawn a foreign top-level via
+    subprocess (tkinter Tk()), run each() against Notepad, and verify
+    the popup gets auto-dismissed mid-loop."""
 
+    def test_each_dismisses_unexpected_top_level_popup(self):
+        import subprocess
+        import sys as _sys
+        from core import verbs
 
-class TestSaveAs(WindowsUITestBase):
-    """`dialogs.save_as` drives the Save As dialog end-to-end."""
+        # Mark everything currently visible as expected so only the
+        # popup we're about to spawn counts as unexpected.
+        verbs._seed_expected_from_current()
 
-    def test_save_as_writes_to_target_path(self):
-        actions.press(self.win, "File:MenuItemControl")
-        actions.press(self.win, "New tab:MenuItemControl")
-        time.sleep(0.8)
-        apps.bring_to_foreground(self.win)
-        text = "save_as_test_payload"
-        actions.write_text(self.win, "Text editor:DocumentControl", text)
-        time.sleep(0.3)
+        # Spawn a foreign top-level window. Title 'AT_TEST_POPUP' is
+        # unique so we can locate it. The `after(30s, destroy)` is a
+        # backstop in case auto-dismiss fails — we never want a
+        # zombie tk process to outlive the test.
+        popup = subprocess.Popen([
+            _sys.executable, "-c",
+            "import tkinter\n"
+            "r = tkinter.Tk()\n"
+            "r.title('AT_TEST_POPUP')\n"
+            "r.geometry('320x160')\n"
+            "r.after(30000, r.destroy)\n"
+            "r.mainloop()\n",
+        ])
+        try:
+            # Wait for the window to render.
+            time.sleep(2.5)
+            self.assertIsNone(popup.poll(),
+                              "popup subprocess should still be alive")
 
-        target = self.tmp / "save_as_target.txt"
-        if target.exists():
-            target.unlink()
+            # Sanity: the popup is in the live HWND enumeration.
+            from core.app import _enumerate_top_level_hwnds
+            from core.verbs import _hwnd_title
+            popup_hwnds = [h for h in _enumerate_top_level_hwnds()
+                           if _hwnd_title(h) == "AT_TEST_POPUP"]
+            self.assertGreaterEqual(
+                len(popup_hwnds), 1,
+                "AT_TEST_POPUP must be visible at the start of the test",
+            )
 
-        import pyautogui
-        from core import app as app_mod
-        pyautogui.hotkey("ctrl", "s")
-        dlg = app_mod.popup(self.win, "save", timeout=8)
-        self.assertIsNotNone(dlg)
-        dialogs.save_as(dlg, target)
+            # Run each() — its entry will pre-dismiss the foreign popup
+            # because it's not in `_expected_hwnds`. The test verb is a
+            # plain lambda so we measure dismiss behaviour, not click
+            # mechanics.
+            results = []
+            verbs.each(
+                lambda w, ctrl_id: results.append(ctrl_id),
+                self.win,
+                ["A", "B", "C"],
+            )
+            self.assertEqual(results, ["A", "B", "C"])
 
-        # wait for the dialog to close, then verify the file
-        actions.wait_until_absent(self.win, "File name:ComboBoxControl",
-                                  timeout=10)
-        self.assertTrue(target.exists(),
-                        f"save_as did not produce {target}")
-        self.assertEqual(target.read_text().strip(), text)
+            # Give WM_CLOSE / mainloop a moment to actually tear down.
+            for _ in range(30):
+                if popup.poll() is not None:
+                    break
+                time.sleep(0.2)
+            self.assertIsNotNone(
+                popup.poll(),
+                "popup subprocess should have exited after auto-dismiss",
+            )
+        finally:
+            if popup.poll() is None:
+                popup.kill()
+                popup.wait(timeout=3)
 
 
 class TestWaitUntilAbsent(WindowsUITestBase):
@@ -443,6 +476,332 @@ class TestAppsIsRunning(WindowsUITestBase):
 
     def test_is_running_false_for_nonexistent(self):
         self.assertFalse(apps.is_running("definitelynotanapp.exe"))
+
+
+class TestMultiAppMatchAndFingerprint(WindowsUITestBase):
+    """End-to-end stress: multi-app, fingerprint capture, `match()`,
+    tree-structure changes, close-and-reopen, window swap.
+
+    This class drives both Notepad and Calculator so the multi-app
+    code paths (`_classify_window`, the runtime `match`, and the
+    `data.<name>` runner attribute logic) exercise real UIA shapes.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if os.name != "nt":
+            raise unittest.SkipTest("Windows-only integration tests")
+        # Skip if Calculator isn't available (sandbox / Windows Server).
+        if shutil_which("calc.exe") is None and shutil_which("calc") is None:
+            raise unittest.SkipTest("calc.exe not on PATH")
+
+    def setUp(self):
+        super().setUp()
+        # Override fingerprint dir so we don't pollute any pre-existing
+        # data/window_fingerprints/ on this machine.
+        self._orig_fp = config.WINDOW_FINGERPRINT_DIR
+        config.WINDOW_FINGERPRINT_DIR = self.tmp / "fingerprints"
+        config.WINDOW_FINGERPRINT_DIR.mkdir(parents=True, exist_ok=True)
+        _kill_calc()
+
+    def tearDown(self):
+        config.WINDOW_FINGERPRINT_DIR = self._orig_fp
+        _kill_calc()
+        super().tearDown()
+
+    def _open_calc(self):
+        apps.open_app("calc.exe")
+        # Calculator on Win11 is a UWP app — the launcher exits and
+        # the actual window is owned by a different process. Poll.
+        deadline = time.time() + 10
+        win = None
+        while time.time() < deadline:
+            for w in auto.GetRootControl().GetChildren():
+                try:
+                    if (w.ClassName or "").lower().startswith("application"):
+                        if "calc" in (w.Name or "").lower():
+                            win = w
+                            break
+                except Exception:
+                    continue
+            if win is not None:
+                break
+            time.sleep(0.5)
+        if win is None:
+            self.skipTest("Calculator window did not appear within 10s")
+        return win
+
+    def test_fingerprint_captures_and_persists(self):
+        """Compute a fingerprint of live Notepad and round-trip it
+        through the sidecar. Loaded fingerprint matches the live one
+        within similarity tolerance."""
+        fp = tree.fingerprint(self.win)
+        self.assertGreater(len(fp), 5,
+                           "Notepad's depth-4 walk should have >5 nodes")
+        # All entries must be (depth, role) tuples.
+        for entry in fp:
+            self.assertEqual(len(entry), 2)
+            self.assertIsInstance(entry[0], int)
+            self.assertIsInstance(entry[1], str)
+        path = tree.save_fingerprint("notepad_test", fp)
+        self.assertTrue(path.exists())
+        loaded = tree.load_fingerprint("notepad_test")
+        self.assertEqual(loaded, fp)
+        # Re-walking should produce a near-identical fingerprint.
+        fp2 = tree.fingerprint(self.win)
+        self.assertGreaterEqual(tree.similarity(fp, fp2), 0.95,
+                                "two consecutive walks of the same window "
+                                "should be ~identical in shape")
+
+    def test_match_finds_app_by_fingerprint(self):
+        """Save a fingerprint for Notepad, then call match() with the
+        already-open fast path. Returns the live Notepad control (same
+        HWND as `self.win`)."""
+        from core import app
+        tree.save_fingerprint("notepad_test", tree.fingerprint(self.win))
+        result = app.match("notepad_test", launch="notepad.exe")
+        self.assertIsNotNone(result, "match should find Notepad")
+        self.assertEqual(result.NativeWindowHandle,
+                         self.win.NativeWindowHandle)
+
+    def test_match_returns_none_when_no_sidecar(self):
+        # Same silent-fail contract for both modes.
+        from core import app
+        self.assertIsNone(
+            app.match("never_inspected_window", launch="notepad.exe"),
+        )
+        self.assertIsNone(
+            app.match("never_inspected_window", launch="popup"),
+        )
+
+    def test_match_distinguishes_notepad_from_calc(self):
+        """Both apps open simultaneously. match() must pick the right
+        one from the fingerprint sidecar (fast path — both already open
+        means no Popen fires)."""
+        from core import app
+        calc_win = self._open_calc()
+        try:
+            tree.save_fingerprint("notepad_test", tree.fingerprint(self.win))
+            tree.save_fingerprint("calc_test", tree.fingerprint(calc_win))
+
+            np_match = app.match("notepad_test", launch="notepad.exe")
+            calc_match = app.match("calc_test", launch="calc.exe")
+            self.assertEqual(np_match.NativeWindowHandle,
+                             self.win.NativeWindowHandle,
+                             "match('notepad') must pick the Notepad HWND")
+            self.assertEqual(calc_match.NativeWindowHandle,
+                             calc_win.NativeWindowHandle,
+                             "match('calc') must pick the Calc HWND, "
+                             "not Notepad — fingerprint shapes differ enough")
+        finally:
+            _kill_calc()
+
+    def test_match_relocates_after_close_and_reopen(self):
+        """Save fingerprint → close Notepad → match with launch
+        relaunches and finds the new instance with a fresh HWND."""
+        from core import app
+        tree.save_fingerprint("notepad_test", tree.fingerprint(self.win))
+        old_hwnd = self.win.NativeWindowHandle
+
+        _kill_notepad()
+        # match with launch=exe re-opens it.
+        result = app.match("notepad_test", launch="notepad.exe", timeout=15)
+        self.assertIsNotNone(result, "match with launch should relaunch + find")
+        self.assertNotEqual(result.NativeWindowHandle, old_hwnd,
+                            "relaunched Notepad has a fresh HWND")
+        # Re-establish self.win for tearDown / subsequent tests.
+        self.win = result
+
+    def test_fingerprint_tolerates_menu_open(self):
+        """Open the File menu (which adds a popup subtree to the live
+        UIA tree) and confirm the depth-limited fingerprint of the
+        WINDOW (not the popup) still matches the saved baseline. Depth
+        limit is the key — popups live deeper than 4."""
+        baseline = tree.fingerprint(self.win)
+        actions.press(self.win, "File:MenuItemControl")
+        try:
+            time.sleep(0.6)
+            opened = tree.fingerprint(self.win)
+            score = tree.similarity(baseline, opened)
+            self.assertGreaterEqual(
+                score, config.FINGERPRINT_THRESHOLD,
+                f"opening File menu should not break window fingerprint "
+                f"(score={score:.2f})",
+            )
+        finally:
+            import pyautogui
+            pyautogui.press("escape")
+            time.sleep(0.4)
+
+    def test_swap_between_apps_and_back(self):
+        """Drive Notepad, swap to Calculator, do something there, swap
+        back to Notepad and confirm it's still functional. Verifies the
+        cross-process bring-to-foreground + verb dispatch doesn't get
+        confused about which window is "current"."""
+        from core import verbs
+        calc_win = self._open_calc()
+        try:
+            # Step 1: Notepad — write a marker.
+            apps.bring_to_foreground(self.win)
+            self.assertTrue(verbs.is_visible(self.win, "File:MenuItemControl"),
+                            "Notepad's File menu should be visible")
+
+            # Step 2: Calculator — bring it forward and confirm UIA sees it.
+            apps.bring_to_foreground(calc_win)
+            time.sleep(0.5)
+            calc_walked = tree.walk_live(calc_win)
+            self.assertGreater(len(calc_walked), 5,
+                               "Calculator walk should have >5 nodes")
+
+            # Step 3: Hop back to Notepad. Verbs must still resolve
+            # against self.win — the runner-style "data.notepad" pattern
+            # works because the window control object is stable.
+            apps.bring_to_foreground(self.win)
+            time.sleep(0.5)
+            self.assertTrue(verbs.is_visible(self.win, "File:MenuItemControl"),
+                            "after swap-back, File menu must still be visible")
+        finally:
+            _kill_calc()
+
+
+class TestTwoSameAppInstances(WindowsUITestBase):
+    """Two Notepad windows open simultaneously: drive both, swap focus,
+    write distinct text in each, verify each retained its own content.
+
+    Documents the *expected* shape of this workflow (user obtains
+    individual `Control` references via top-level window enumeration —
+    `match()` with fingerprint returns the *first* identical window and
+    can't disambiguate two structurally identical instances)."""
+
+    def setUp(self):
+        super().setUp()
+        # Open a SECOND notepad on top of the one setUp launched.
+        apps.open_app("notepad.exe")
+        time.sleep(2.5)
+        self.windows = self._all_notepad_windows()
+        if len(self.windows) < 2:
+            self.skipTest(
+                "could not open two simultaneous Notepad top-level windows "
+                "on this machine (some Win11 builds tab everything into one)"
+            )
+
+    def _all_notepad_windows(self):
+        out = []
+        for w in auto.GetRootControl().GetChildren():
+            try:
+                pid = w.ProcessId
+            except Exception:
+                continue
+            try:
+                stem = (psutil.Process(pid).name() or "").lower().rsplit(".", 1)[0]
+            except Exception:
+                continue
+            if stem != "notepad":
+                continue
+            if not w.Name:
+                continue
+            out.append(w)
+        return out
+
+    def _editor_text(self, win):
+        """Read the current document text via UIA ValuePattern."""
+        for n in tree.walk_live(win):
+            if n["role"] == "DocumentControl":
+                try:
+                    return n["ctrl"].GetValuePattern().Value or ""
+                except Exception:
+                    return ""
+        return ""
+
+    def test_can_drive_two_notepads_independently(self):
+        """Each Notepad instance should accept independent fill+verify
+        cycles. Confirms `apps.bring_to_foreground` correctly targets a
+        specific HWND and the verbs follow the foreground window."""
+        win_a, win_b = self.windows[0], self.windows[1]
+        self.assertNotEqual(win_a.NativeWindowHandle,
+                            win_b.NativeWindowHandle,
+                            "two top-level Notepad windows have different HWNDs")
+
+        # Round 1: write distinct markers.
+        text_a = "alpha_run_marker_2026"
+        text_b = "beta_run_marker_2026"
+        actions.write_text(win_a, "Text editor:DocumentControl", text_a)
+        time.sleep(0.4)
+        actions.write_text(win_b, "Text editor:DocumentControl", text_b)
+        time.sleep(0.4)
+
+        self.assertIn(text_a, self._editor_text(win_a),
+                      "Notepad A should hold its marker")
+        self.assertIn(text_b, self._editor_text(win_b),
+                      "Notepad B should hold its marker")
+        # And critically — they should NOT have each other's text.
+        self.assertNotIn(text_b, self._editor_text(win_a),
+                         "Notepad A must not pick up B's text")
+        self.assertNotIn(text_a, self._editor_text(win_b),
+                         "Notepad B must not pick up A's text")
+
+    def test_swap_back_and_forth_preserves_state(self):
+        """Hop A → B → A and confirm A still has its text after the
+        round-trip. Catches regressions where bringing one window
+        forward might deselect / overwrite another's content."""
+        win_a, win_b = self.windows[0], self.windows[1]
+        actions.write_text(win_a, "Text editor:DocumentControl",
+                           "first_pass_a")
+        actions.write_text(win_b, "Text editor:DocumentControl",
+                           "first_pass_b")
+        # Swap back to A and append more — `write_text` clicks first
+        # (so it brings A forward, focuses the editor, paste-overwrites).
+        actions.write_text(win_a, "Text editor:DocumentControl",
+                           "second_pass_a")
+        time.sleep(0.4)
+        # Hop to B for a peek; B should still have its earlier text.
+        apps.bring_to_foreground(win_b)
+        time.sleep(0.4)
+        self.assertIn("first_pass_b", self._editor_text(win_b),
+                      "Notepad B's content should survive the swap")
+        # Hop back to A; both pastes are present (write_text inserts at
+        # cursor, so the second call appends to the first).
+        apps.bring_to_foreground(win_a)
+        time.sleep(0.4)
+        text_a = self._editor_text(win_a)
+        self.assertIn("first_pass_a", text_a,
+                      "first paste must persist after swapping windows")
+        self.assertIn("second_pass_a", text_a,
+                      "second paste must also be present (append semantics)")
+
+    def test_match_documents_first_wins_limitation(self):
+        """When two structurally identical windows are open, `match()`
+        with a saved fingerprint returns the FIRST scorer. This test
+        documents that limitation so future regressions are visible.
+        Workaround: enumerate top-level HWNDs manually (as this test
+        class does)."""
+        from core import app as app_mod
+        win_a, _ = self.windows[0], self.windows[1]
+        tree.save_fingerprint("notepad_test", tree.fingerprint(win_a))
+        result = app_mod.match("notepad_test", launch="notepad.exe")
+        self.assertIsNotNone(result, "match should find at least one window")
+        # We don't assert WHICH window wins — only that match returned
+        # one of them. The point is to document non-determinism here.
+        hwnds = {w.NativeWindowHandle for w in self.windows}
+        self.assertIn(result.NativeWindowHandle, hwnds,
+                      "match must return one of the two open Notepad HWNDs")
+
+
+def _kill_calc():
+    import psutil
+    for p in psutil.process_iter(["name"]):
+        try:
+            n = (p.info.get("name") or "").lower()
+            if n in ("calculator.exe", "calc.exe", "calculatorapp.exe"):
+                p.kill()
+        except Exception:
+            pass
+    time.sleep(0.5)
+
+
+def shutil_which(name):
+    import shutil
+    return shutil.which(name)
 
 
 if __name__ == "__main__":

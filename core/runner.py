@@ -84,23 +84,21 @@ def _run_states(states, start_state, data):
 
 
 def _normalize_apps(apps, app_mod):
-    """Return [(name, Spec), ...] from APPS in either form:
+    """Return [(name, exe_path), ...] from APPS as a dict {name: path}
+    or a list of paths (auto-name = lowercased exe stem).
 
-    * list of strings/Specs — auto-name = lowercased exe stem
-      ("notepad.exe" → "notepad", "ValSuitePro.exe" → "valsuitepro")
-    * dict {name: path-or-Spec} — explicit names, useful when the
-      auto-name collides or you want a clearer attribute on ctx
+    Strings only — `app.spec(...)` was removed; fingerprint matching
+    in `match()` makes the title-hint obsolete.
     """
     pairs = []
     if isinstance(apps, dict):
-        for name, item in apps.items():
-            pairs.append((name, app_mod._coerce(item)))
+        for name, path in apps.items():
+            pairs.append((name, str(path)))
     else:
-        for item in apps:
-            spec = app_mod._coerce(item)
-            stem = app_mod._exe_stem(spec.path).lower()
+        for path in apps:
+            stem = app_mod._exe_stem(str(path)).lower()
             stem = re.sub(r"[^a-z0-9_]", "_", stem) or "app"
-            pairs.append((stem, spec))
+            pairs.append((stem, str(path)))
     return pairs
 
 
@@ -140,8 +138,8 @@ def start(states, apps, start_state):
     from core import apps as apps_mod
 
     pairs = _normalize_apps(apps, app_mod)
-    apps_mod.verify_installed([s.path for _, s in pairs])
-    kill_names = [app_mod._exe_stem(s.path) + ".exe" for _, s in pairs]
+    apps_mod.verify_installed([p for _, p in pairs])
+    kill_names = [app_mod._exe_stem(p) + ".exe" for _, p in pairs]
 
     # Bundle args via functools.partial — module-level _driver_entry
     # plus picklable args (states is a dict of module-level functions;
@@ -156,11 +154,24 @@ def start(states, apps, start_state):
 
 
 def _driver_entry(states, start_state, pairs):
-    """Runs in the watchdog's child process. Launches every app and
-    drives the state machine. Module-level so multiprocessing.spawn
-    can pickle the call target."""
+    """Runs in the watchdog's child process. Resolves every app to a live
+    window and drives the state machine.
+
+    Seeds the popup-dismiss "expected" set from the current top-level
+    HWNDs (anything already open at runner start is treated as wanted).
+    Then `match(name, launch=path)` finds-or-launches each app and
+    registers the resulting HWND as expected.
+    """
     from core import app as app_mod
+    from core import verbs as verbs_mod
+    verbs_mod._seed_expected_from_current()
     data = SimpleNamespace()
-    for name, spec in pairs:
-        setattr(data, name, app_mod.launch(spec))
+    for name, path in pairs:
+        win = app_mod.match(name, launch=path)
+        if win is None:
+            raise TimeoutError(
+                f"could not match or launch app {name!r} from {path!r}. "
+                f"Run `python inspector.py`, capture this app, and try again."
+            )
+        setattr(data, name, win)
     _run_states(states, start_state, data)

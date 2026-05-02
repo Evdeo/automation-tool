@@ -537,5 +537,153 @@ class TestSnapshotBackcompat(unittest.TestCase):
         self.assertEqual(loaded[2]["struct_id"], "0.1")
 
 
+class TestFingerprint(unittest.TestCase):
+    """Depth-limited tree fingerprint used by `core.app.match` and the
+    inspector's window-identity logic. Built from `walk_live`, compared
+    via multiset Jaccard."""
+
+    def _walk(self, *struct_ids_with_role):
+        """Build a synthetic walk-list shaped like `tree.walk_live`'s
+        output. Each arg is a (struct_id, role) pair."""
+        return [
+            {"tree_id": f"#{sid}:{role}", "struct_id": sid,
+             "name": "", "role": role,
+             "bbox": [0, 0, 1, 1], "enabled": True,
+             "ctrl": object()}
+            for sid, role in struct_ids_with_role
+        ]
+
+    def _fake_window_returning(self, walk):
+        """Create a wrapper exposed as a 'window' to `tree.fingerprint`
+        — but `fingerprint` calls `walk_live` itself, so we patch that.
+        Returns an object usable as the `window` arg."""
+        return object()
+
+    def test_returns_depth_role_tuples(self):
+        walk = self._walk(
+            ("0", "WindowControl"),
+            ("0.0", "MenuBarControl"),
+            ("0.0.0", "MenuItemControl"),
+        )
+        with mock.patch("core.tree.walk_live", return_value=walk):
+            fp = tree.fingerprint(self._fake_window_returning(walk))
+        self.assertEqual(fp, [
+            (0, "WindowControl"),
+            (1, "MenuBarControl"),
+            (2, "MenuItemControl"),
+        ])
+
+    def test_depth_limit_excludes_deep_nodes(self):
+        walk = self._walk(
+            ("0", "WindowControl"),
+            ("0.0", "PaneControl"),
+            ("0.0.0", "TabBarControl"),
+            ("0.0.0.0", "TabItemControl"),
+            ("0.0.0.0.0", "DocumentControl"),
+            ("0.0.0.0.0.0", "TextControl"),  # depth 5 — excluded
+        )
+        with mock.patch("core.tree.walk_live", return_value=walk):
+            fp = tree.fingerprint(self._fake_window_returning(walk),
+                                  max_depth=4)
+        depths = [d for d, _ in fp]
+        self.assertEqual(max(depths), 4)
+        self.assertNotIn((5, "TextControl"), fp)
+
+    def test_excludes_name_field(self):
+        # Two windows with identical structure but different Names must
+        # produce identical fingerprints.
+        walk_a = self._walk(("0", "WindowControl"),
+                            ("0.0", "ButtonControl"))
+        walk_a[0]["name"] = "App A"
+        walk_a[1]["name"] = "Save"
+        walk_b = self._walk(("0", "WindowControl"),
+                            ("0.0", "ButtonControl"))
+        walk_b[0]["name"] = "App B"
+        walk_b[1]["name"] = "Cancel"
+        with mock.patch("core.tree.walk_live", return_value=walk_a):
+            fp_a = tree.fingerprint(object())
+        with mock.patch("core.tree.walk_live", return_value=walk_b):
+            fp_b = tree.fingerprint(object())
+        self.assertEqual(fp_a, fp_b)
+
+    def test_similarity_identical_scores_one(self):
+        fp = [(0, "WindowControl"), (1, "ButtonControl")]
+        self.assertEqual(tree.similarity(fp, fp), 1.0)
+
+    def test_similarity_disjoint_scores_zero(self):
+        a = [(0, "WindowControl"), (1, "ButtonControl")]
+        b = [(0, "PaneControl"), (1, "EditControl")]
+        self.assertEqual(tree.similarity(a, b), 0.0)
+
+    def test_similarity_added_children_above_threshold(self):
+        # Original 4 nodes; live tree gained 1 extra child node.
+        # Multiset Jaccard: 4 / 5 = 0.8 — above 0.75 threshold.
+        a = [(0, "WindowControl"), (1, "MenuBarControl"),
+             (1, "ToolBarControl"), (1, "PaneControl")]
+        b = a + [(1, "StatusBarControl")]
+        s = tree.similarity(a, b)
+        self.assertGreater(s, 0.75)
+        self.assertLess(s, 1.0)
+
+    def test_similarity_handles_empty_inputs(self):
+        self.assertEqual(tree.similarity([], []), 1.0)
+        self.assertEqual(tree.similarity([], [(0, "X")]), 0.0)
+        self.assertEqual(tree.similarity([(0, "X")], []), 0.0)
+
+    def test_similarity_is_symmetric(self):
+        a = [(0, "A"), (1, "B"), (1, "B"), (2, "C")]
+        b = [(0, "A"), (1, "B"), (2, "C"), (3, "D")]
+        self.assertEqual(tree.similarity(a, b), tree.similarity(b, a))
+
+    def test_similarity_multiset_counts_duplicates(self):
+        # Two B's in `a` and one B in `b` — multiset intersection has 1 B.
+        a = [(0, "A"), (1, "B"), (1, "B")]
+        b = [(0, "A"), (1, "B")]
+        # Intersection = {A, B} = 2; union = {A, B, B} = 3.
+        self.assertAlmostEqual(tree.similarity(a, b), 2 / 3, places=4)
+
+
+class TestFingerprintSidecar(unittest.TestCase):
+    """`save_fingerprint` / `load_fingerprint` round-trip via JSON files
+    under `config.WINDOW_FINGERPRINT_DIR`."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="fp_test_"))
+        self._orig = config.WINDOW_FINGERPRINT_DIR
+        config.WINDOW_FINGERPRINT_DIR = self.tmp
+
+    def tearDown(self):
+        config.WINDOW_FINGERPRINT_DIR = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_save_and_load_roundtrip(self):
+        fp = [(0, "WindowControl"), (1, "ButtonControl"),
+              (2, "TextControl")]
+        path = tree.save_fingerprint("notepad", fp)
+        self.assertTrue(path.exists())
+        self.assertEqual(tree.load_fingerprint("notepad"), fp)
+
+    def test_load_missing_returns_none(self):
+        self.assertIsNone(tree.load_fingerprint("never_saved"))
+
+    def test_save_includes_optional_hints(self):
+        path = tree.save_fingerprint(
+            "save_dialog", [(0, "WindowControl")],
+            hints={"title_hint": "Save As", "is_app": False, "spec": None},
+        )
+        data = json.loads(path.read_text())
+        self.assertIn("hints", data)
+        self.assertEqual(data["hints"]["title_hint"], "Save As")
+        # Hints don't leak into the loaded fingerprint.
+        self.assertEqual(tree.load_fingerprint("save_dialog"),
+                         [(0, "WindowControl")])
+
+    def test_save_sanitises_name(self):
+        # Path-traversal / weird chars don't escape the fingerprint dir.
+        path = tree.save_fingerprint("save:dialog/v2",
+                                     [(0, "WindowControl")])
+        self.assertIn("save_dialog_v2", str(path))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

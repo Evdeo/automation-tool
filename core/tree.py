@@ -460,6 +460,87 @@ def find_or_heal(walked, tree_id, snap):
     return None, False
 
 
+# --- Window fingerprints ---------------------------------------------------
+# A fingerprint is a depth-limited walk of (depth, role) tuples used to
+# identify a window across sessions. It tolerates dynamic content (tabs,
+# document body, list rows) because anything below `max_depth` is dropped.
+# Compared via Jaccard-style overlap on the multiset, with a threshold
+# around 0.75. See `core/app.py::match` for the matching driver.
+
+
+def fingerprint(window, max_depth=None):
+    """Compute a depth-limited fingerprint for `window`.
+
+    Walks the live UIA tree via `walk_live`, then keeps only nodes whose
+    depth (number of dots in `struct_id`) is ≤ `max_depth`. Returns a
+    list of `(depth, role)` tuples in walk order. The window's process
+    isn't part of the fingerprint — caller can filter candidates by
+    process if it cares.
+    """
+    if max_depth is None:
+        max_depth = config.FINGERPRINT_MAX_DEPTH
+    walked = walk_live(window)
+    out = []
+    root_depth = walked[0]["struct_id"].count(".") if walked else 0
+    for node in walked:
+        d = node["struct_id"].count(".") - root_depth
+        if d > max_depth:
+            continue
+        out.append((d, node["role"]))
+    return out
+
+
+def similarity(a, b):
+    """Multiset Jaccard over `(depth, role)` tuples.
+
+    Reuses the same shape as `compute_diff` (added / removed sets) but
+    on multisets, so a window that gained two children scores
+    `matched / (matched + added)` rather than 1.0. Returns a float in
+    [0, 1]; identical fingerprints score 1.0; disjoint score 0.0.
+    """
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    # Multiset intersection / union via Counter.
+    from collections import Counter
+    ca, cb = Counter(a), Counter(b)
+    inter = sum((ca & cb).values())
+    union = sum((ca | cb).values())
+    return inter / union if union else 0.0
+
+
+def fingerprint_path(name):
+    return Path(config.WINDOW_FINGERPRINT_DIR) / f"{_safe_name(name)}.json"
+
+
+def _safe_name(name):
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+
+
+def save_fingerprint(name, fp, hints=None):
+    """Persist `fp` (list of [depth, role]) under `name`. `hints` is an
+    optional dict of human-readable extras (e.g., title at capture time)
+    stored alongside for debugging — never used for matching."""
+    p = fingerprint_path(name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"fingerprint": [list(t) for t in fp]}
+    if hints:
+        payload["hints"] = hints
+    p.write_text(json.dumps(payload, indent=2))
+    return p
+
+
+def load_fingerprint(name):
+    """Return the saved fingerprint as a list of `(depth, role)` tuples,
+    or `None` if no sidecar exists for `name`."""
+    p = fingerprint_path(name)
+    if not p.exists():
+        return None
+    data = json.loads(p.read_text())
+    return [tuple(t) for t in data.get("fingerprint", [])]
+
+
 if __name__ == "__main__":
     import sys
     from core import apps
