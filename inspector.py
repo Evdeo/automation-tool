@@ -202,34 +202,52 @@ def _top_window(ctrl):
 
 
 def _path_to_chain(win, x, y):
-    chain = [(win, 0)]
-    cur = win
-    for _ in range(100):
-        try:
-            children = cur.GetChildren()
-        except Exception:
-            break
-        if not children:
-            break
-        best_idx = -1
-        best_area = None
-        for i, child in enumerate(children):
-            try:
-                r = child.BoundingRectangle
-            except Exception:
+    """Find the deepest UIA element under (x, y) inside `win` and build
+    its index chain back up to the window.
+
+    The previous implementation descended one level at a time picking
+    the smallest immediate child whose `BoundingRectangle` contains
+    (x, y). That fails on WinUI / WinUI3 popups (modern Notepad menus,
+    Calculator submenus, ContentDialogs) because intermediate
+    rendering Panes have phantom bboxes that don't span their visible
+    descendants — descent halts at `Pop-upHost` and the cursor jumps
+    to the dropdown's geometric centre instead of the menu item.
+
+    The fix descends with `tree.walk_live` (full recursive enumeration
+    — same path the runtime uses) and picks the smallest-area
+    descendant whose stored bbox contains (x, y). The chain is then
+    reconstructed from the leaf's struct_id by walking each ancestor
+    prefix back up the walked list.
+    """
+    walked = tree.walk_live(win)
+    candidates = []
+    for n in walked:
+        bb = n.get("bbox") or [0, 0, 0, 0]
+        if bb[0] <= x <= bb[2] and bb[1] <= y <= bb[3]:
+            w = bb[2] - bb[0]
+            h = bb[3] - bb[1]
+            if w <= 0 or h <= 0:
                 continue
-            if r.left <= x <= r.right and r.top <= y <= r.bottom:
-                area = max(0, r.right - r.left) * max(0, r.bottom - r.top)
-                if best_area is None or area < best_area:
-                    best_idx = i
-                    best_area = area
-        if best_idx < 0:
+            candidates.append((w * h, n))
+    if not candidates:
+        # Cursor is outside `win`'s subtree (foreign window, off-screen).
+        chain = [(win, 0)]
+        return win, chain, tree._segment(win, 0), "0"
+    candidates.sort(key=lambda t: t[0])
+    leaf_node = candidates[0][1]
+
+    by_struct = {n["struct_id"]: n for n in walked}
+    parts = leaf_node["struct_id"].split(".")
+    chain = []
+    for d in range(len(parts)):
+        sid = ".".join(parts[: d + 1])
+        n = by_struct.get(sid)
+        if n is None:
             break
-        chain.append((children[best_idx], best_idx))
-        cur = children[best_idx]
+        chain.append((n["ctrl"], int(parts[d])))
     name_path = "/".join(tree._segment(c, i) for c, i in chain)
     struct_id = ".".join(str(i) for _, i in chain)
-    return cur, chain, name_path, struct_id
+    return chain[-1][0], chain, name_path, struct_id
 
 
 def _find_interactable_ancestor(chain):

@@ -10,6 +10,22 @@
     ],
     [
       2,
+      "PaneControl"
+    ],
+    [
+      3,
+      "WindowControl"
+    ],
+    [
+      4,
+      "MenuControl"
+    ],
+    [
+      1,
+      "PaneControl"
+    ],
+    [
+      2,
       "DocumentControl"
     ],
     [
@@ -224,5 +240,10 @@
       2,
       "ButtonControl"
     ]
-  ]
+  ],
+  "hints": {
+    "title_hint": "*alpha_run_marker_2026MARKER MARKER - Notepad",
+    "is_app": true,
+    "spec": "notepad.exe"
+  }
 }

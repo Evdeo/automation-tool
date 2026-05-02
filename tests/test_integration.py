@@ -451,6 +451,45 @@ class TestVerbPostConditions(WindowsUITestBase):
             f"double_click should select exactly one word; got {clipboard!r}",
         )
 
+    def test_move_positions_cursor_without_clicking(self):
+        """`move(EDITOR)` must put the OS cursor at the editor center
+        AND not actuate anything. Verified by reading the cursor
+        position via Win32 GetCursorPos AND confirming the editor's
+        text is unchanged (no click → no caret moved → no text
+        inserted)."""
+        from core import verbs
+        import ctypes
+        from ctypes import wintypes
+
+        actions.write_text(self.win, "Text editor:DocumentControl",
+                           "move_test_marker")
+        time.sleep(0.3)
+        text_before = self._editor_text() if hasattr(self, "_editor_text") else None
+
+        verbs.move(self.win, "Text editor:DocumentControl")
+        time.sleep(0.2)
+
+        # Verify cursor is inside the editor's bbox.
+        pt = wintypes.POINT()
+        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+        # Find the editor in the live walk to get its bbox.
+        editor = next(
+            (n for n in tree.walk_live(self.win)
+             if n["role"] == "DocumentControl"),
+            None,
+        )
+        self.assertIsNotNone(editor, "editor should exist in live walk")
+        l, t, r, b = editor["bbox"]
+        self.assertTrue(
+            l <= pt.x <= r and t <= pt.y <= b,
+            f"cursor at ({pt.x}, {pt.y}) outside editor bbox {editor['bbox']}",
+        )
+        # Editor text unchanged — `move` didn't click, didn't reposition
+        # caret, didn't insert anything.
+        if text_before is not None:
+            self.assertEqual(self._editor_text(), text_before,
+                             "move() must not alter editor content")
+
     def test_click_after_honours_delay_and_clicks(self):
         """`click_after(id, delay)` sleeps for `delay`, then clicks.
         Verifies BOTH halves: the elapsed time matches the delay (within

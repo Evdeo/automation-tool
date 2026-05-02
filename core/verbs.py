@@ -358,6 +358,18 @@ def click_after(window: Control, control_id: str, delay: float) -> bool:
     return actions.press(window, control_id)
 
 
+@_action_verb
+def move(window: Control, control_id: str) -> bool:
+    """Move the cursor to `control_id`'s center without clicking.
+
+    Use when you want to position over a control to read state,
+    surface a tooltip, capture pixel data, or set up a screenshot —
+    anywhere a click would risk activating something you don't want
+    to actuate (toggles, submenu triggers, links).
+    """
+    return actions.move(window, control_id)
+
+
 # --- Text input -------------------------------------------------------------
 
 

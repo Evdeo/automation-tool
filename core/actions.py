@@ -71,24 +71,30 @@ def _abs_coords(x, y):
     return int(x * 65535 / max(sw - 1, 1)), int(y * 65535 / max(sh - 1, 1))
 
 
+def _cursor_move(x, y, settle=0.15):
+    """Move the cursor to (x, y) via SendInput. The single move
+    primitive every click verb starts with — exposed via `move()` for
+    cursor positioning without click side effects (hover, capture
+    pixel data, read tooltip without activating)."""
+    ax, ay = _abs_coords(x, y)
+    _send_inputs(_make_mouse_input(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, ax, ay))
+    time.sleep(settle)
+
+
 def _cursor_click(x, y, settle=0.15, hold=0.05):
     """Move the cursor to (x, y) and issue a real left click via SendInput.
 
     `settle` is the wait between move and mouse-down so the target sees a
     hover; `hold` is the wait between down and up so it counts as a click,
     not a flicker."""
-    ax, ay = _abs_coords(x, y)
-    _send_inputs(_make_mouse_input(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, ax, ay))
-    time.sleep(settle)
+    _cursor_move(x, y, settle=settle)
     _send_inputs(_make_mouse_input(_MOUSEEVENTF_LEFTDOWN))
     time.sleep(hold)
     _send_inputs(_make_mouse_input(_MOUSEEVENTF_LEFTUP))
 
 
 def _cursor_double_click(x, y, settle=0.15, hold=0.05, gap=0.08):
-    ax, ay = _abs_coords(x, y)
-    _send_inputs(_make_mouse_input(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, ax, ay))
-    time.sleep(settle)
+    _cursor_move(x, y, settle=settle)
     for _ in range(2):
         _send_inputs(_make_mouse_input(_MOUSEEVENTF_LEFTDOWN))
         time.sleep(hold)
@@ -99,9 +105,7 @@ def _cursor_double_click(x, y, settle=0.15, hold=0.05, gap=0.08):
 def _cursor_right_click(x, y, settle=0.15, hold=0.05):
     """Move the cursor to (x, y) and issue a right click via SendInput.
     Mirrors `_cursor_click` with the RIGHTDOWN / RIGHTUP flags."""
-    ax, ay = _abs_coords(x, y)
-    _send_inputs(_make_mouse_input(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, ax, ay))
-    time.sleep(settle)
+    _cursor_move(x, y, settle=settle)
     _send_inputs(_make_mouse_input(_MOUSEEVENTF_RIGHTDOWN))
     time.sleep(hold)
     _send_inputs(_make_mouse_input(_MOUSEEVENTF_RIGHTUP))
@@ -195,6 +199,16 @@ def _resolve(window, tree_id):
 
 
 # --- Public actions -----------------------------------------------------------
+
+
+def move(window, tree_id):
+    """Move the cursor to the resolved control's center. No click —
+    this is the bare positioning primitive for hover-based captures
+    (read pixel, surface tooltip, position before a screenshot)."""
+    _, (x, y) = _resolve(window, tree_id)
+    _cursor_move(x, y)
+    db.log("move", tree_id, x, y)
+    return True
 
 
 def press(window, tree_id):

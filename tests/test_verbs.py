@@ -282,6 +282,12 @@ class TestClickFamily(unittest.TestCase):
             verbs.click_when_enabled(self.win, "BTN_ID", timeout=5)
         mp.assert_called_once_with(self.win, "BTN_ID", timeout=5)
 
+    def test_move_delegates_to_actions_move(self):
+        with mock.patch.object(verbs.actions, "move",
+                               return_value=True) as mm:
+            self.assertTrue(verbs.move(self.win, "BTN_ID"))
+        mm.assert_called_once_with(self.win, "BTN_ID")
+
     def test_click_after_sleeps_then_presses(self):
         with mock.patch.object(verbs.actions, "press",
                                return_value=True) as mp:
