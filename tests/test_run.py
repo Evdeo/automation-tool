@@ -237,9 +237,9 @@ class TestStateSave(unittest.TestCase):
              mock.patch.object(run, "wait"), \
              mock.patch.object(run, "log") as ml:
             nxt, _ = run.state_save(data)
-        # Sequence: hotkey(Ctrl+S), type(path), key("enter")
+        # Sequence: hotkey(Ctrl+Shift+S), type(path), key("enter")
         self.assertEqual([n for n, _, _ in events], ["hk", "type", "key"])
-        self.assertEqual(events[0][1][1:], ("ctrl", "s"))
+        self.assertEqual(events[0][1][1:], ("ctrl", "shift", "s"))
         # `key("enter")` — single positional arg, no window.
         self.assertEqual(events[2][1], ("enter",))
         # type() received the resolved SAVE_PATH as a string.

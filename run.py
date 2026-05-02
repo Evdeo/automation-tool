@@ -215,22 +215,26 @@ def state_snapshot(data):
 
 
 def state_save(data):
-    """Save via Ctrl+S → type path → Enter, all inside `no_dismiss()`
-    so the auto-dismiss never sees the Save dialog. `key("enter")` —
-    not `hotkey(data.notepad, "enter")` — sends the confirm without
-    yanking focus back to Notepad's main window (which would type the
-    Enter into the editor instead of submitting the dialog)."""
+    """Save via Ctrl+Shift+S → type path → Enter, all inside
+    `no_dismiss()` so the auto-dismiss never sees the Save dialog.
+    Ctrl+Shift+S (Save As) is used instead of Ctrl+S because Ctrl+S
+    on an already-saved tab quietly overwrites the existing path —
+    Save As always opens the dialog and lets us drive the file name.
+    `key("enter")` — not `hotkey(data.notepad, "enter")` — sends the
+    confirm without yanking focus back to Notepad's main window
+    (which would type the Enter into the editor instead of submitting
+    the dialog)."""
     target = str(config.SAVE_PATH)
     config.SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
     if config.SAVE_PATH.exists():
         config.SAVE_PATH.unlink()
     with no_dismiss():
-        hotkey(data.notepad, "ctrl", "s")
-        wait(0.6)
+        hotkey(data.notepad, "ctrl", "shift", "s")
+        wait(0.8)
         type(target)
         wait(0.2)
         key("enter")
-        wait(0.8)
+        wait(1.0)
     log("results", "saved", target)
     return "close", data
 

@@ -269,24 +269,30 @@ def state_visual_snapshot(data):
 
 
 def state_save(data):
-    """Save via Ctrl+S: open dialog, type path, Enter. Wrapped in
-    `no_dismiss()` so the auto-dismiss doesn't kill the Save dialog
-    before we type the path into it."""
+    """Save via Ctrl+Shift+S (Save As): open dialog, type path, Enter.
+    Wrapped in `no_dismiss()` so the auto-dismiss doesn't kill the Save
+    dialog. Ctrl+Shift+S — not Ctrl+S — because a tab that already has
+    a path silently re-saves on Ctrl+S without opening the dialog,
+    which would skip our path-typing step."""
     print("[showcase] save: writing report to disk...")
-    target = config.RESULTS_DIR / f"showcase_report_{datetime.now():%H%M%S}.txt"
+    # Absolute path — Notepad's Save As resolves relative paths against
+    # its own CWD, not ours, so a non-resolved Path silently saves to
+    # the wrong place.
+    target = (config.RESULTS_DIR /
+              f"showcase_report_{datetime.now():%H%M%S}.txt").resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         target.unlink()
     with no_dismiss():
-        hotkey(data.notepad, "ctrl", "s")
-        wait(0.6)
+        hotkey(data.notepad, "ctrl", "shift", "s")
+        wait(0.8)
         type(str(target))
         wait(0.2)
         # `key("enter")` — not `hotkey(notepad, "enter")` — so the
         # confirm lands on the Save dialog instead of pulling focus
         # back to Notepad's main editor.
         key("enter")
-        wait(0.8)
+        wait(1.0)
     log("showcase", "saved", str(target))
     data.report_path = target
     return "close", data

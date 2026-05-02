@@ -144,10 +144,11 @@ class TestStateSave(unittest.TestCase):
              mock.patch.object(showcase, "wait"), \
              mock.patch.object(showcase, "log"):
             nxt, out = showcase.state_save(data)
-        # Sequence: hotkey(Ctrl+S), type(path), key("enter") — focus-targeted
-        # so the confirm lands on the Save dialog, not Notepad's editor.
+        # Sequence: hotkey(Ctrl+Shift+S), type(path), key("enter") —
+        # focus-targeted so the confirm lands on the Save dialog, not
+        # Notepad's editor.
         self.assertEqual([n for n, _, _ in events], ["hk", "type", "key"])
-        self.assertEqual(events[0][1][1:], ("ctrl", "s"))
+        self.assertEqual(events[0][1][1:], ("ctrl", "shift", "s"))
         self.assertEqual(events[2][1], ("enter",))
         # Every recorded call observed dismiss depth >= 1, proving the
         # whole sequence ran inside `no_dismiss()`.

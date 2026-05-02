@@ -167,7 +167,10 @@ def _driver_entry(states, start_state, pairs):
     verbs_mod._seed_expected_from_current()
     data = SimpleNamespace()
     for name, path in pairs:
-        win = app_mod.match(name, launch=path)
+        # 45s timeout — UWP apps (e.g. Calculator on Win11) take 20-30s
+        # for the actual window to render after Popen returns. Win32
+        # apps like Notepad come up in <2s and don't notice the slack.
+        win = app_mod.match(name, launch=path, timeout=45.0)
         if win is None:
             raise TimeoutError(
                 f"could not match or launch app {name!r} from {path!r}. "
