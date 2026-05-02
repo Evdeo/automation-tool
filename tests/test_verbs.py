@@ -288,6 +288,14 @@ class TestClickFamily(unittest.TestCase):
             self.assertTrue(verbs.move(self.win, "BTN_ID"))
         mm.assert_called_once_with(self.win, "BTN_ID")
 
+    def test_hold_and_drag_delegates_to_actions_drag(self):
+        with mock.patch.object(verbs.actions, "drag",
+                               return_value=True) as md:
+            self.assertTrue(
+                verbs.hold_and_drag(self.win, "SRC_ID", "DST_ID"),
+            )
+        md.assert_called_once_with(self.win, "SRC_ID", "DST_ID")
+
     def test_click_after_sleeps_then_presses(self):
         with mock.patch.object(verbs.actions, "press",
                                return_value=True) as mp:

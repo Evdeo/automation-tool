@@ -16,6 +16,7 @@ from core.verbs import (
     click_when_enabled,
     click_after,
     move,
+    hold_and_drag,
     # text input
     fill,
     type,
@@ -49,7 +50,7 @@ from core.verbs import (
 
 
 __all__ = [
-    "click", "double_click", "right_click", "click_when_enabled", "click_after", "move",
+    "click", "double_click", "right_click", "click_when_enabled", "click_after", "move", "hold_and_drag",
     "fill", "type", "key", "hotkey",
     "is_visible", "is_enabled", "is_color", "check_color",
     "wait_visible", "wait_enabled", "wait_gone",

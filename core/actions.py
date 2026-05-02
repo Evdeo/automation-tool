@@ -111,6 +111,25 @@ def _cursor_right_click(x, y, settle=0.15, hold=0.05):
     _send_inputs(_make_mouse_input(_MOUSEEVENTF_RIGHTUP))
 
 
+def _cursor_drag(x1, y1, x2, y2, settle=0.15, hold=0.05, steps=12):
+    """Press at (x1, y1), drag through `steps` intermediate points to
+    (x2, y2), release. Intermediate points matter — many apps only
+    recognise a drag if WM_MOUSEMOVE arrives between the down and up
+    (sliders that snap to ticks, drag-and-drop targets that need
+    DragEnter events, painting tools)."""
+    _cursor_move(x1, y1, settle=settle)
+    _send_inputs(_make_mouse_input(_MOUSEEVENTF_LEFTDOWN))
+    time.sleep(hold)
+    for i in range(1, steps + 1):
+        ix = x1 + (x2 - x1) * i // steps
+        iy = y1 + (y2 - y1) * i // steps
+        ax, ay = _abs_coords(ix, iy)
+        _send_inputs(_make_mouse_input(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE, ax, ay))
+        time.sleep(0.01)
+    time.sleep(hold)
+    _send_inputs(_make_mouse_input(_MOUSEEVENTF_LEFTUP))
+
+
 # --- Tree resolution ----------------------------------------------------------
 
 
@@ -208,6 +227,17 @@ def move(window, tree_id):
     _, (x, y) = _resolve(window, tree_id)
     _cursor_move(x, y)
     db.log("move", tree_id, x, y)
+    return True
+
+
+def drag(window, src_id, dst_id):
+    """Hold the left mouse button at `src_id`'s center and drag to
+    `dst_id`'s center, then release. Use for sliders, drag-and-drop
+    targets, painting strokes, resize handles."""
+    _, (x1, y1) = _resolve(window, src_id)
+    _, (x2, y2) = _resolve(window, dst_id)
+    _cursor_drag(x1, y1, x2, y2)
+    db.log("drag", src_id, x1, y1, dst_id, x2, y2)
     return True
 
 

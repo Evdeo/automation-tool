@@ -370,6 +370,18 @@ def move(window: Control, control_id: str) -> bool:
     return actions.move(window, control_id)
 
 
+@_action_verb
+def hold_and_drag(window: Control, src_id: str, dst_id: str) -> bool:
+    """Press at `src_id`'s center, drag to `dst_id`'s center, release.
+
+    Use for sliders (drag the thumb to a track position), drag-and-drop
+    targets, resize handles, paint strokes — anywhere a single click
+    isn't enough and the gesture is "press here, drag there." Both
+    controls must be resolvable in `window`'s tree at call time.
+    """
+    return actions.drag(window, src_id, dst_id)
+
+
 # --- Text input -------------------------------------------------------------
 
 
