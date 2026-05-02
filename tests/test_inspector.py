@@ -292,6 +292,79 @@ class TestPathToChain(unittest.TestCase):
         self.assertEqual(struct_id, "0")
         self.assertEqual(len(chain), 1)
 
+    def test_promotes_text_leaf_to_interactable_ancestor(self):
+        """Cursor over the inner TextControl of a MenuItemControl must
+        capture the MenuItemControl, not the text label. Without this,
+        two presses on the same Zoom in button can produce different
+        captures (the Zoom in text, the Ctrl+Plus shortcut text, etc.)
+        depending on cursor jitter."""
+        text = FakeCtrl(
+            name="Zoom in", control_type="TextControl",
+            bbox=(40, 40, 60, 60),
+        )
+        item = FakeCtrl(
+            name="Zoom in", control_type="MenuItemControl",
+            bbox=(20, 30, 80, 70), children=[text],
+        )
+        win = FakeCtrl(
+            name="Win", control_type="WindowControl",
+            bbox=(0, 0, 200, 200), children=[item],
+        )
+        cur, chain, _, struct_id = inspector._path_to_chain(win, 50, 50)
+        self.assertIs(cur, item,
+                      "leaf should be promoted to MenuItemControl ancestor")
+        self.assertEqual(cur.ControlTypeName, "MenuItemControl")
+        self.assertEqual(struct_id, "0.0")
+        self.assertEqual(len(chain), 2)
+
+    def test_no_promotion_when_no_interactable_ancestor(self):
+        """Standalone TextControl — no clickable parent — stays as-is.
+        We don't promote arbitrarily; only when there's an interactable
+        thing the user probably meant to click."""
+        text = FakeCtrl(
+            name="Label", control_type="TextControl",
+            bbox=(40, 40, 60, 60),
+        )
+        pane = FakeCtrl(
+            name="Container", control_type="PaneControl",
+            bbox=(0, 0, 100, 100), children=[text],
+        )
+        win = FakeCtrl(
+            name="Win", control_type="WindowControl",
+            bbox=(0, 0, 200, 200), children=[pane],
+        )
+        cur, _, _, struct_id = inspector._path_to_chain(win, 50, 50)
+        self.assertIs(cur, text,
+                      "no interactable ancestor → leaf stays put")
+        self.assertEqual(struct_id, "0.0.0")
+
+    def test_promotes_to_deepest_interactable(self):
+        """When multiple interactable ancestors exist (button inside a
+        list-item), promote to the DEEPEST one — the most specific
+        thing the user likely meant to click."""
+        text = FakeCtrl(
+            name="Save", control_type="TextControl",
+            bbox=(40, 40, 60, 60),
+        )
+        button = FakeCtrl(
+            name="Save", control_type="ButtonControl",
+            bbox=(35, 35, 65, 65), children=[text],
+        )
+        list_item = FakeCtrl(
+            name="Row", control_type="ListItemControl",
+            bbox=(20, 20, 80, 80), children=[button],
+        )
+        win = FakeCtrl(
+            name="Win", control_type="WindowControl",
+            bbox=(0, 0, 200, 200), children=[list_item],
+        )
+        cur, chain, _, struct_id = inspector._path_to_chain(win, 50, 50)
+        # Inner ButtonControl is the deepest interactable — pick it,
+        # not the outer ListItemControl.
+        self.assertIs(cur, button)
+        self.assertEqual(cur.ControlTypeName, "ButtonControl")
+        self.assertEqual(struct_id, "0.0.0")
+
     def test_picks_smallest_among_overlapping_siblings(self):
         # Two siblings overlap at the click point. The smaller one wins
         # so the inspector targets the most specific control under the

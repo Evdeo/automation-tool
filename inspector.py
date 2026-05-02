@@ -248,6 +248,23 @@ def _path_to_chain(win, x, y):
         if n is None:
             break
         chain.append((n["ctrl"], int(parts[d])))
+
+    # Promote non-interactable leaves to their deepest interactable
+    # ancestor. The cursor over a menu item lands on whichever
+    # TextControl child it happens to be over (the "Zoom in" label, the
+    # "Ctrl+Plus" shortcut, etc.), so without promotion two presses on
+    # the same button capture different sub-elements. Users want the
+    # MenuItemControl/ButtonControl/etc. — the thing you'd actually
+    # click in automation. Standalone TextControls (no interactable
+    # ancestor in the chain) are left untouched.
+    leaf_ctrl = chain[-1][0]
+    if leaf_ctrl.ControlTypeName in _NON_INTERACTABLE:
+        for depth in range(len(chain) - 2, -1, -1):
+            anc_ctrl, _ = chain[depth]
+            if anc_ctrl.ControlTypeName in _INTERACTABLE:
+                chain = chain[: depth + 1]
+                break
+
     name_path = "/".join(tree._segment(c, i) for c, i in chain)
     struct_id = ".".join(str(i) for _, i in chain)
     return chain[-1][0], chain, name_path, struct_id
