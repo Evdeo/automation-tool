@@ -432,22 +432,20 @@ class TestHandlePromptChar(unittest.TestCase):
         self.assertEqual(inspector._pending_name["buffer"], "")
 
     def test_enter_finalizes_with_default_when_buffer_empty(self):
-        with mock.patch.object(inspector, "pyperclip") as mp:
-            inspector._handle_prompt_char("\r")
+        inspector._handle_prompt_char("\r")
         self.assertIsNone(inspector._pending_name)
-        # First positional arg of pyperclip.copy is the snippet line.
-        snippet = mp.copy.call_args[0][0]
-        self.assertIn("DEFAULT_NAME", snippet)
+        # Per-step clipboard write was removed. Check the captures list
+        # — that's what `_emit_session_end` reads at Ctrl+C.
+        self.assertEqual(len(inspector._captures), 1)
+        self.assertEqual(inspector._captures[0]["final_name"], "DEFAULT_NAME")
 
     def test_enter_finalizes_with_typed_buffer(self):
         inspector._pending_name["buffer"] = "my_button"
-        with mock.patch.object(inspector, "pyperclip") as mp:
-            inspector._handle_prompt_char("\r")
+        inspector._handle_prompt_char("\r")
         self.assertIsNone(inspector._pending_name)
-        snippet = mp.copy.call_args[0][0]
-        # Typed name is sanitized to UPPER_SNAKE.
-        self.assertIn("MY_BUTTON", snippet)
-        self.assertNotIn("DEFAULT_NAME", snippet)
+        # Typed name is sanitized to UPPER_SNAKE and used verbatim
+        # (no window prefix prepended).
+        self.assertEqual(inspector._captures[0]["final_name"], "MY_BUTTON")
 
     def test_ctrl_c_finalizes_and_signals_main_thread(self):
         inspector._pending_name["buffer"] = "x"
@@ -515,46 +513,43 @@ class TestFinalizePrompt(unittest.TestCase):
         }
 
     def test_default_used_when_buffer_empty(self):
-        with mock.patch.object(inspector, "pyperclip") as mp:
-            inspector._finalize_prompt()
+        inspector._finalize_prompt()
         self.assertEqual(len(inspector._captures), 1)
         cap = inspector._captures[0]
         self.assertEqual(cap["final_name"], "MY_BTN")
-        snippet = mp.copy.call_args[0][0]
-        self.assertEqual(
-            snippet, 'MY_BTN = "0.2.0"  # Save',
-        )
+        # Per-step clipboard copy was removed — full block goes to
+        # clipboard once at session end. The sidecar file is the
+        # per-step audit trail.
+        contents = inspector._snippets_file.read_text(encoding="utf-8")
+        self.assertIn('MY_BTN = "0.2.0"  # Save', contents)
 
     def test_typed_name_overrides_default(self):
         self._set_pending(buffer="really_save", default="SAVE")
-        with mock.patch.object(inspector, "pyperclip") as mp:
-            inspector._finalize_prompt()
+        inspector._finalize_prompt()
         cap = inspector._captures[0]
+        # Custom name used verbatim — no window prefix is prepended.
         self.assertEqual(cap["final_name"], "REALLY_SAVE")
         # Default is no longer reserved (user typed an override).
         self.assertNotIn("SAVE", inspector._used_names)
-        snippet = mp.copy.call_args[0][0]
-        self.assertIn("REALLY_SAVE", snippet)
+        contents = inspector._snippets_file.read_text(encoding="utf-8")
+        self.assertIn("REALLY_SAVE", contents)
 
     def test_typed_name_disambiguates_against_used(self):
         # Pretend SUBMIT is already taken from a prior commit.
         inspector._used_names.add("SUBMIT")
         self._set_pending(buffer="submit", default="OK_BTN")
-        with mock.patch.object(inspector, "pyperclip"):
-            inspector._finalize_prompt()
+        inspector._finalize_prompt()
         self.assertEqual(inspector._captures[0]["final_name"], "SUBMIT_2")
 
     def test_typed_garbage_falls_back_to_default(self):
         # A buffer of pure punctuation sanitises to "" — falls back to
         # the suggested default rather than producing a malformed name.
         self._set_pending(buffer="!!!", default="OK_BTN")
-        with mock.patch.object(inspector, "pyperclip"):
-            inspector._finalize_prompt()
+        inspector._finalize_prompt()
         self.assertEqual(inspector._captures[0]["final_name"], "OK_BTN")
 
     def test_sidecar_file_appended(self):
-        with mock.patch.object(inspector, "pyperclip"):
-            inspector._finalize_prompt()
+        inspector._finalize_prompt()
         self.assertTrue(inspector._snippets_file.exists())
         contents = inspector._snippets_file.read_text(encoding="utf-8")
         self.assertIn('MY_BTN = "0.2.0"', contents)
@@ -562,17 +557,44 @@ class TestFinalizePrompt(unittest.TestCase):
         self.assertTrue(contents.endswith("\n"))
 
     def test_clears_pending_name(self):
-        with mock.patch.object(inspector, "pyperclip"):
-            inspector._finalize_prompt()
+        inspector._finalize_prompt()
         self.assertIsNone(inspector._pending_name)
 
     def test_no_op_when_no_prompt(self):
-        # Calling finalize when nothing is pending must not crash and
-        # must not write to clipboard.
+        # Calling finalize when nothing is pending must not crash. The
+        # per-step clipboard touch was removed entirely — the only
+        # clipboard write happens once at session end.
         inspector._pending_name = None
         with mock.patch.object(inspector, "pyperclip") as mp:
             inspector._finalize_prompt()
         mp.copy.assert_not_called()
+
+    def test_typed_name_does_not_get_window_prefix(self):
+        """Regression: when the user types a custom name, that name is
+        used verbatim — no window prefix is prepended even if there's
+        a window context. Earlier behavior prepended `<WINDOW>_`."""
+        commit = {
+            "struct_id": "0.0.0.0.1.0.3",
+            "name_path": "App:WindowControl/#3:WindowControl",
+            "name": "",
+            "control_type": "WindowControl",
+            "class_name": "",
+            "automation_id": "",
+            "bbox": (0, 0, 100, 30),
+            "bbox_center": (50, 15),
+            "color": (0, 0, 0),
+            "window_name": "riot_client",
+            "interactable_ancestor": None,
+            "default_name": "RIOT_CLIENT_STEP_1",
+            "final_name": None,
+        }
+        inspector._used_names.add("RIOT_CLIENT_STEP_1")
+        inspector._pending_name = {
+            "buffer": "Hello", "default": "RIOT_CLIENT_STEP_1",
+            "commit": commit,
+        }
+        inspector._finalize_prompt()
+        self.assertEqual(inspector._captures[0]["final_name"], "HELLO")
 
 
 # --- Press handling: routing decisions --------------------------------------
@@ -990,6 +1012,24 @@ class TestMultiAppRegistration(unittest.TestCase):
         self.assertEqual(inspector._window_by_hwnd[100], "notepad")
         self.assertEqual(inspector._stems_seen["notepad"], "notepad")
 
+    def test_app_spec_records_full_exe_path_when_available(self):
+        """Apps not on PATH (Riot Client, Steam games, custom installs)
+        need a full executable path so the runner can launch them.
+        `_exe_path_for_pid` returns `psutil.Process(pid).exe()` which is
+        the absolute path, not just the basename."""
+        win = _FakeWin(hwnd=100, pid=42, name="Riot Client")
+        full_path = r"C:\Riot Games\Riot Client\RiotClientServices.exe"
+        with mock.patch.object(inspector, "_exe_stem_for_pid",
+                               return_value="riotclientservices"), \
+             mock.patch.object(inspector, "_exe_path_for_pid",
+                               return_value=full_path):
+            inspector._classify_window(win)
+        self.assertEqual(
+            inspector._windows["riotclientservices"]["spec"], full_path,
+            "spec must be the full exe path so subprocess.Popen can "
+            "launch apps not on PATH",
+        )
+
     def test_second_hwnd_same_stem_registers_as_popup(self):
         # First HWND establishes the app.
         win_app = _FakeWin(hwnd=100, pid=42, name="Notepad")
@@ -1023,7 +1063,9 @@ class TestMultiAppRegistration(unittest.TestCase):
         win_a = _FakeWin(hwnd=100, pid=42, name="App A")
         win_b = _FakeWin(hwnd=200, pid=43, name="App B")
         with mock.patch.object(inspector, "_exe_stem_for_pid",
-                               side_effect=["myapp", "myapp"]):
+                               return_value="myapp"), \
+             mock.patch.object(inspector, "_exe_path_for_pid",
+                               return_value="C:/Apps/myapp.exe"):
             # Force the second call to think it's a different stem
             # by clearing the _stems_seen entry between calls.
             name_a, _ = inspector._classify_window(win_a)

@@ -16,10 +16,10 @@ Each press is interpreted as either a COMMIT or an INFO dump:
     bounding-rect center, minimal info is printed (struct_id, name,
     control type, sampled center color). A red-rectangle screenshot is
     saved under ``data/inspector_steps/<window>/<element>.png``. A name
-    prompt opens; press Enter for the suggested default, or type a name
-    + Enter to override. The single-line snippet
-    ``WINDOW_NAME = "struct_id"  # label`` is copied to the clipboard
-    and appended to ``data/inspector_snippets/session_<ts>.py``.
+    prompt opens; press Enter for the suggested default, or type your
+    own name + Enter — your name is used verbatim, no prefix is added.
+    The snippet is appended to ``data/inspector_snippets/session_<ts>.py``
+    as a quiet audit trail; the clipboard is NOT touched per-step.
   * **Second press on the same element or a descendant** = INFO dump
     (full UIA properties). Doesn't commit again. The name prompt stays
     open if it was active.
@@ -34,9 +34,12 @@ user inspects is registered:
   * Any additional HWND in an already-known process is a "popup". The
     inspector prompts once for the popup's name.
 
-At session end (Ctrl+C) the clipboard contains a paste-ready block:
+At session end (Ctrl+C) the clipboard is filled — once — with a
+paste-ready block:
 
-  * ``APPS = {<stem>: "<exe>.exe", ...}`` — one entry per app.
+  * ``APPS = {<stem>: "<full exe path>", ...}`` — one entry per app.
+    Full paths so the runner can launch installs that aren't on PATH
+    (Riot Client, Steam games, custom installs).
   * Constants grouped by window under ``# --- <name> ---`` headers.
 
 Per-window tree fingerprints (depth-limited UIA shape) are written to
@@ -275,6 +278,25 @@ def _exe_stem_for_pid(pid):
         return ""
 
 
+def _exe_path_for_pid(pid):
+    """Full executable path for a PID (e.g.
+    `C:\\Riot Games\\Riot Client\\RiotClientServices.exe`). The runner
+    feeds this directly to `subprocess.Popen`, so we record the full
+    path — not just the basename — to support apps that aren't on PATH.
+
+    Falls back to `<exe_stem>.exe` if the path can't be resolved
+    (some sandboxed processes refuse `Process.exe()`); for in-PATH
+    apps like notepad.exe that fallback still works."""
+    try:
+        path = psutil.Process(pid).exe() or ""
+        if path:
+            return path
+    except Exception:
+        pass
+    stem = _exe_stem_for_pid(pid)
+    return f"{stem}.exe" if stem else ""
+
+
 # --- Naming -----------------------------------------------------------------
 
 
@@ -363,17 +385,18 @@ def _classify_window(win):
             title = win.Name or ""
         except Exception:
             pass
+        spec = _exe_path_for_pid(win_pid)
         _windows[name] = {
             "hwnd": win_hwnd,
             "is_app": True,
-            "spec": f"{win_stem}.exe",
+            "spec": spec,
             "title_hint": title,
             "fingerprint": None,
             "first_seen_idx": len(_windows),
         }
         _stems_seen[win_stem] = name
         _window_by_hwnd[win_hwnd] = name
-        _emit(f"** registered app: {name} ({win_stem}.exe)")
+        _emit(f"** registered app: {name} ({spec})")
         return name, "app"
 
     # Same exe, new HWND → popup. Auto-name from title; user prompted
@@ -664,15 +687,16 @@ def _finalize_prompt():
     commit = _pending_name["commit"]
     default = commit["default_name"]
     window_name = commit.get("window_name", "")
-    window_prefix = _sanitize_const(window_name) if window_name else ""
 
     if buffer:
+        # User typed a custom name — use exactly what they wrote, do
+        # NOT prepend the window prefix. The default suggestion already
+        # has the prefix; if the user is typing their own name they're
+        # explicitly overriding it.
         sanitized = _sanitize_const(buffer)
         if sanitized and not sanitized[0].isdigit():
             _used_names.discard(default)
             base = sanitized
-            if window_prefix and not base.startswith(window_prefix + "_"):
-                base = f"{window_prefix}_{base}"
             n = 2
             final = base
             while final in _used_names:
@@ -709,11 +733,10 @@ def _finalize_prompt():
     label = _readable_label(commit)
     snippet = f'{final} = "{commit["struct_id"]}"  # {label}'
 
-    try:
-        pyperclip.copy(snippet)
-    except Exception as e:
-        print(f"inspector: clipboard copy failed ({e})")
-
+    # Sidecar file is a quiet audit trail — kept so a crashed session
+    # doesn't lose captures. Per-step clipboard copy was removed: the
+    # full session block is copied at Ctrl+C end via `_emit_session_end`,
+    # which is the only point the user actually pastes into run.py.
     if _snippets_file is not None:
         try:
             with open(_snippets_file, "a", encoding="utf-8") as f:
@@ -725,7 +748,6 @@ def _finalize_prompt():
 
     sys.stdout.write("\n")
     sys.stdout.flush()
-    _emit(f'-> copied to clipboard + sidecar: {snippet}')
 
     _pending_name = None
 
