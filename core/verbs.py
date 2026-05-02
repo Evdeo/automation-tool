@@ -41,6 +41,12 @@ _WM_CLOSE = 0x0010
 # not in this set is dismissed before the next action verb runs.
 _expected_hwnds = set()
 
+# PIDs of every process whose top-level window has been registered via
+# `match()`. The app's own popups (menus, dropdowns, modal dialogs) live
+# in this PID — auto-dismiss skips them so user code doesn't have to
+# `match()` every menu it opens.
+_trusted_pids = set()
+
 # HWNDs visible at the start of the most recent action verb call.
 # Read by `core.app.match` in popup mode to find what's appeared since.
 _hwnd_baseline_set = set()
@@ -59,10 +65,26 @@ def _hwnd_baseline_snapshot():
     return frozenset(_hwnd_baseline_set)
 
 
+def _hwnd_pid(hwnd):
+    """PID owning `hwnd`, or 0 if Win32 fails."""
+    try:
+        from ctypes import wintypes as _wt
+        pid = _wt.DWORD()
+        _user32.GetWindowThreadProcessId(hwnd, _ctypes.byref(pid))
+        return pid.value
+    except Exception:
+        return 0
+
+
 def _mark_hwnd_expected(hwnd):
-    """For `core.app.match` — add a returned HWND to the expected set."""
+    """For `core.app.match` — add a returned HWND to the expected set
+    AND mark its owning PID as trusted (so the app's own menus and
+    dialogs don't get auto-dismissed)."""
     if hwnd:
         _expected_hwnds.add(hwnd)
+        pid = _hwnd_pid(hwnd)
+        if pid:
+            _trusted_pids.add(pid)
 
 
 def _seed_expected_from_current():
@@ -178,6 +200,12 @@ def _dismiss_unexpected_popups(window=None):
     for hwnd in current:
         if hwnd in _expected_hwnds:
             continue
+        # Same-process popups are the app's own menus / dropdowns /
+        # modal dialogs — leave them alone. Foreign popups (UAC,
+        # toasts, antivirus) come from a different PID and still get
+        # dismissed.
+        if _hwnd_pid(hwnd) in _trusted_pids:
+            continue
         _dismiss_one(hwnd)
     if config.POPUP_CHECK_DEEP and window is not None:
         for child in _walk_active_window_for_in_window_popups(window):
@@ -287,9 +315,32 @@ def type(text: str, interval: float = 0.02) -> None:
     pyautogui.write(text, interval=interval)
 
 
+@_action_verb_no_window
+def key(*combo: str) -> None:
+    """Press a key or key combo at the current keyboard focus.
+
+    Mirrors `type()` for non-character keys: no window argument and no
+    auto-foreground, so keystrokes go to whichever window currently
+    holds focus. Use this instead of `hotkey()` to confirm a popup
+    (e.g. press Enter on a Save dialog) without yanking focus back to
+    the parent app.
+
+        key("enter")        # single key
+        key("ctrl", "c")    # combo
+    """
+    if len(combo) == 1:
+        pyautogui.press(combo[0])
+    else:
+        pyautogui.hotkey(*combo)
+
+
 @_action_verb
 def hotkey(window: Control, *combo: str) -> None:
-    """Send a key combo (e.g. `hotkey(notepad, "ctrl", "s")`)."""
+    """Send a key combo (e.g. `hotkey(notepad, "ctrl", "s")`).
+
+    Foregrounds `window` first — if you need keys to land on a popup
+    that shouldn't lose focus (e.g. a Save dialog), use `key()` instead.
+    """
     apps.bring_to_foreground(window)
     pyautogui.hotkey(*combo)
 
@@ -394,7 +445,10 @@ def each(verb, window: Control, ids, **kwargs) -> list:
                 if i < last_idx:
                     from core.app import _enumerate_top_level_hwnds
                     current = set(_enumerate_top_level_hwnds())
-                    new_unexpected = current - _hwnd_baseline_set - _expected_hwnds
+                    new_unexpected = {
+                        h for h in current - _hwnd_baseline_set - _expected_hwnds
+                        if _hwnd_pid(h) not in _trusted_pids
+                    }
                     if new_unexpected:
                         for hwnd in new_unexpected:
                             _dismiss_one(hwnd)

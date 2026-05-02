@@ -119,6 +119,35 @@ class TestStateTypeTime(unittest.TestCase):
         mfill.assert_called_once_with(data.notepad, run.EDITOR,
                                       "2026-01-01 12:00:00")
         mn.assert_called_once()
+        self.assertEqual(nxt, "extra")
+
+
+class TestStateExtra(unittest.TestCase):
+    """state_extra exercises the click family + clipboard verbs that
+    the main narrative doesn't naturally hit (double_click, right_click,
+    click_after, read_clipboard, key)."""
+
+    def test_full_pipeline(self):
+        data = _make_data()
+        with mock.patch.object(run, "double_click") as mdc, \
+             mock.patch.object(run, "right_click") as mrc, \
+             mock.patch.object(run, "click_after") as mca, \
+             mock.patch.object(run, "hotkey") as mhk, \
+             mock.patch.object(run, "key") as mkey, \
+             mock.patch.object(run, "read_clipboard",
+                               return_value="word"), \
+             mock.patch.object(run, "wait"), \
+             mock.patch.object(run, "log") as mlog:
+            nxt, _ = run.state_extra(data)
+        mdc.assert_called_once_with(data.notepad, run.EDITOR)
+        mrc.assert_called_once_with(data.notepad, run.EDITOR)
+        # hotkey for Ctrl+C, key for Escape (focus-targeted dismiss).
+        mhk.assert_called_once_with(data.notepad, "ctrl", "c")
+        mkey.assert_called_once_with("escape")
+        # click_after with the documented short pacing delay.
+        mca.assert_called_once_with(data.notepad, run.EDITOR, delay=0.1)
+        # read_clipboard result logged.
+        mlog.assert_any_call("results", "selected_word", "word")
         self.assertEqual(nxt, "verify")
 
 
@@ -132,32 +161,36 @@ class TestStateVerify(unittest.TestCase):
             "bbox_center": (50, 50), "automation_id": "edit",
             "struct_id": run.EDITOR,
         }
-        with mock.patch.object(run, "each",
+        with mock.patch.object(run, "wait_enabled", return_value=True), \
+             mock.patch.object(run, "each",
                                side_effect=[[True, True, True],
                                             [True, True, True]]), \
              mock.patch.object(run, "read_info",
                                return_value=info_dict), \
              mock.patch.object(run, "check_color",
                                return_value=(255, 100, 50)), \
+             mock.patch.object(run, "is_color", return_value=True), \
              mock.patch.object(run, "log_csv") as mlc, \
              mock.patch.object(run, "log") as ml:
             nxt, _ = run.state_verify(data)
         mlc.assert_called_once()
-        # Header includes nine columns (ts + four kind/value pairs).
-        self.assertEqual(len(mlc.call_args.kwargs["header"]), 9)
+        # Header is 11 columns: ts + five kind/value pairs.
+        self.assertEqual(len(mlc.call_args.kwargs["header"]), 11)
         # No warning logged when everything is visible+enabled.
         ml.assert_not_called()
         self.assertEqual(nxt, "snapshot")
 
     def test_warns_when_control_invisible_or_disabled(self):
         data = _make_data()
-        with mock.patch.object(run, "each",
+        with mock.patch.object(run, "wait_enabled", return_value=True), \
+             mock.patch.object(run, "each",
                                side_effect=[[True, False, True],
                                             [True, True, True]]), \
              mock.patch.object(run, "read_info",
                                return_value={"class_name": "X"}), \
              mock.patch.object(run, "check_color",
                                return_value=(0, 0, 0)), \
+             mock.patch.object(run, "is_color", return_value=False), \
              mock.patch.object(run, "log_csv"), \
              mock.patch.object(run, "log") as ml:
             nxt, _ = run.state_verify(data)
@@ -183,54 +216,74 @@ class TestStateSnapshot(unittest.TestCase):
 
 
 class TestStateSave(unittest.TestCase):
-    def test_hotkey_type_enter_sequence(self):
-        """state_save uses raw Ctrl+S → type(path) → Enter instead of
-        the removed `save_as` verb. Verify the call sequence and that
-        the path used is `config.SAVE_PATH`."""
+    def test_save_sequence_runs_under_no_dismiss(self):
+        """state_save uses Ctrl+S (via `hotkey`) → type(path) →
+        `key("enter")` (focus-targeted, NOT `hotkey(notepad, "enter")`
+        which would steal focus from the Save dialog). The whole
+        sequence runs inside `no_dismiss()` so the Save dialog isn't
+        auto-killed."""
+        from core import verbs
         data = _make_data()
-        order = []
-        with mock.patch.object(run, "hotkey",
-                               side_effect=lambda *a, **k: order.append(("hk", a))), \
-             mock.patch.object(run, "type",
-                               side_effect=lambda *a, **k: order.append(("type", a))), \
+        events = []  # (name, args, dismiss_depth)
+
+        def _record(name):
+            return lambda *a, **k: events.append(
+                (name, a, getattr(verbs._dismiss_paused, "depth", 0))
+            )
+
+        with mock.patch.object(run, "hotkey", side_effect=_record("hk")), \
+             mock.patch.object(run, "type", side_effect=_record("type")), \
+             mock.patch.object(run, "key", side_effect=_record("key")), \
              mock.patch.object(run, "wait"), \
              mock.patch.object(run, "log") as ml:
             nxt, _ = run.state_save(data)
-        # Sequence: hotkey(notepad, "ctrl", "s"), type(path), hotkey(notepad, "enter")
-        self.assertEqual([k for k, _ in order], ["hk", "type", "hk"])
-        # First hotkey is Ctrl+S, second is Enter.
-        self.assertEqual(order[0][1][1:], ("ctrl", "s"))
-        self.assertEqual(order[2][1][1:], ("enter",))
+        # Sequence: hotkey(Ctrl+S), type(path), key("enter")
+        self.assertEqual([n for n, _, _ in events], ["hk", "type", "key"])
+        self.assertEqual(events[0][1][1:], ("ctrl", "s"))
+        # `key("enter")` — single positional arg, no window.
+        self.assertEqual(events[2][1], ("enter",))
         # type() received the resolved SAVE_PATH as a string.
         import config as _cfg
-        self.assertEqual(order[1][1][0], str(_cfg.SAVE_PATH))
+        self.assertEqual(events[1][1][0], str(_cfg.SAVE_PATH))
+        # All three calls observed dismiss-pause depth >= 1.
+        for name, _, depth in events:
+            self.assertGreaterEqual(
+                depth, 1,
+                f"{name} ran with dismiss depth={depth}; expected >=1",
+            )
         ml.assert_called_once()
         self.assertEqual(ml.call_args[0][:2], ("results", "saved"))
         self.assertEqual(nxt, "close")
 
 
 class TestStateClose(unittest.TestCase):
-    def test_clicks_close_tab_when_menu_visible(self):
+    def test_clicks_close_tab_then_terminates_process(self):
         data = _make_data()
         with mock.patch.object(run, "is_visible", return_value=True), \
              mock.patch.object(run, "click") as mc, \
-             mock.patch.object(run, "wait_visible", return_value=True):
+             mock.patch.object(run, "wait_visible", return_value=True), \
+             mock.patch.object(run, "wait"), \
+             mock.patch.object(run, "close") as mclose:
             nxt, _ = run.state_close(data)
         # Two clicks: FILE_MENU then CLOSE_TAB.
         self.assertEqual(mc.call_count, 2)
         mc.assert_any_call(data.notepad, run.FILE_MENU)
         mc.assert_any_call(data.notepad, run.CLOSE_TAB)
+        # Final teardown: kill the Notepad process.
+        mclose.assert_called_once_with(data.notepad)
         self.assertIsNone(nxt)
 
     def test_skips_when_menu_invisible(self):
-        # Defensive branch: if FILE_MENU isn't there, don't try to drive
-        # a non-existent menu — log + end run.
+        # Defensive branch: if FILE_MENU isn't there, skip the menu
+        # drive but still terminate the process — leaves no orphans.
         data = _make_data()
         with mock.patch.object(run, "is_visible", return_value=False), \
              mock.patch.object(run, "click") as mc, \
+             mock.patch.object(run, "close") as mclose, \
              mock.patch.object(run, "log") as ml:
             nxt, _ = run.state_close(data)
         mc.assert_not_called()
+        mclose.assert_called_once_with(data.notepad)
         self.assertIsNone(nxt)
         ml.assert_called_once()
         self.assertEqual(ml.call_args[0][:2],
@@ -243,7 +296,8 @@ class TestStateMachineWiring(unittest.TestCase):
 
     def test_all_states_registered(self):
         expected = {"init", "new_tab", "zoom_in", "zoom_out",
-                    "type_time", "verify", "snapshot", "save", "close"}
+                    "type_time", "extra", "verify", "snapshot",
+                    "save", "close"}
         self.assertEqual(set(run.STATES), expected)
 
     def test_every_registered_state_is_callable(self):

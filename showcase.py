@@ -30,7 +30,7 @@ from pathlib import Path
 import config
 from core import (
     click, double_click, right_click, click_when_enabled, click_after,
-    fill, type, hotkey,
+    fill, type, key, hotkey,
     is_visible, is_enabled, is_color, check_color,
     wait_visible, wait_enabled, wait_gone,
     read_info, read_clipboard, each, no_dismiss,
@@ -282,8 +282,11 @@ def state_save(data):
         wait(0.6)
         type(str(target))
         wait(0.2)
-        hotkey(data.notepad, "enter")
-        wait(0.6)
+        # `key("enter")` — not `hotkey(notepad, "enter")` — so the
+        # confirm lands on the Save dialog instead of pulling focus
+        # back to Notepad's main editor.
+        key("enter")
+        wait(0.8)
     log("showcase", "saved", str(target))
     data.report_path = target
     return "close", data

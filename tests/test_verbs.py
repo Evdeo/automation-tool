@@ -324,6 +324,35 @@ class TestType(unittest.TestCase):
         self.assertEqual(params, ["text", "interval"])
 
 
+class TestKey(unittest.TestCase):
+    """`key` is the focus-targeted sibling of `hotkey` — no window
+    arg, no auto-foreground, just sends the key/combo to whatever
+    currently has keyboard focus."""
+
+    def test_single_key_uses_press(self):
+        with mock.patch.object(verbs.pyautogui, "press") as mp, \
+             mock.patch.object(verbs.pyautogui, "hotkey") as mh:
+            verbs.key("enter")
+        mp.assert_called_once_with("enter")
+        mh.assert_not_called()
+
+    def test_combo_uses_hotkey(self):
+        with mock.patch.object(verbs.pyautogui, "press") as mp, \
+             mock.patch.object(verbs.pyautogui, "hotkey") as mh:
+            verbs.key("ctrl", "c")
+        mh.assert_called_once_with("ctrl", "c")
+        mp.assert_not_called()
+
+    def test_does_not_foreground_anything(self):
+        # Critical contract: key() must NOT touch apps.bring_to_foreground
+        # — that's the whole reason it exists (so a Save-dialog Enter
+        # doesn't pull focus back to the parent app).
+        with mock.patch.object(verbs.apps, "bring_to_foreground") as mfg, \
+             mock.patch.object(verbs.pyautogui, "press"):
+            verbs.key("enter")
+        mfg.assert_not_called()
+
+
 class TestHotkey(unittest.TestCase):
     def test_hotkey_brings_window_forward_then_sends_combo(self):
         win = _FakeWindow()
@@ -559,15 +588,19 @@ class _DismissTestBase(unittest.TestCase):
 
     def setUp(self):
         self._saved_expected = set(verbs._expected_hwnds)
+        self._saved_trusted = set(verbs._trusted_pids)
         self._saved_baseline = set(verbs._hwnd_baseline_set)
         self._saved_depth = getattr(verbs._dismiss_paused, "depth", 0)
         verbs._expected_hwnds.clear()
+        verbs._trusted_pids.clear()
         verbs._hwnd_baseline_set.clear()
         verbs._dismiss_paused.depth = 0
 
     def tearDown(self):
         verbs._expected_hwnds.clear()
         verbs._expected_hwnds.update(self._saved_expected)
+        verbs._trusted_pids.clear()
+        verbs._trusted_pids.update(self._saved_trusted)
         verbs._hwnd_baseline_set.clear()
         verbs._hwnd_baseline_set.update(self._saved_baseline)
         verbs._dismiss_paused.depth = self._saved_depth
@@ -604,6 +637,30 @@ class TestSynchronousPopupDismiss(_DismissTestBase):
              mock.patch.object(verbs, "_dismiss_one") as mdo:
             verbs._dismiss_unexpected_popups(window=None)
         mdo.assert_not_called()
+
+    def test_same_pid_popup_is_left_alone(self):
+        """The app's own menus / dropdowns / dialogs share the registered
+        window's PID. They must not be auto-dismissed (otherwise every
+        `click(file_menu)` followed by `click(menu_item)` would have its
+        menu killed in between)."""
+        verbs._trusted_pids.add(5555)
+        with mock.patch("core.app._enumerate_top_level_hwnds",
+                        return_value=[111, 222]), \
+             mock.patch.object(verbs, "_hwnd_pid",
+                               side_effect=lambda h: 5555 if h == 111 else 9999), \
+             mock.patch.object(verbs, "_dismiss_one") as mdo:
+            verbs._dismiss_unexpected_popups(window=None)
+        # 111 (same PID as registered app) is kept. 222 (foreign) is dismissed.
+        mdo.assert_called_once_with(222)
+
+    def test_mark_hwnd_expected_also_trusts_pid(self):
+        """`_mark_hwnd_expected` is called from `core.app.match` whenever
+        a window is matched. Its side effect is to trust the owning PID
+        so subsequent same-process popups are skipped by dismiss."""
+        with mock.patch.object(verbs, "_hwnd_pid", return_value=7777):
+            verbs._mark_hwnd_expected(123)
+        self.assertIn(123, verbs._expected_hwnds)
+        self.assertIn(7777, verbs._trusted_pids)
 
     def test_action_verb_runs_dismiss_before_inner_call(self):
         """The `_action_verb` decorator must call dismiss BEFORE the

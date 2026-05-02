@@ -140,13 +140,15 @@ class TestStateSave(unittest.TestCase):
 
         with mock.patch.object(showcase, "hotkey", side_effect=_record("hk")), \
              mock.patch.object(showcase, "type", side_effect=_record("type")), \
+             mock.patch.object(showcase, "key", side_effect=_record("key")), \
              mock.patch.object(showcase, "wait"), \
              mock.patch.object(showcase, "log"):
             nxt, out = showcase.state_save(data)
-        # Sequence: hotkey(Ctrl+S), type(path), hotkey(Enter)
-        self.assertEqual([n for n, _, _ in events], ["hk", "type", "hk"])
+        # Sequence: hotkey(Ctrl+S), type(path), key("enter") — focus-targeted
+        # so the confirm lands on the Save dialog, not Notepad's editor.
+        self.assertEqual([n for n, _, _ in events], ["hk", "type", "key"])
         self.assertEqual(events[0][1][1:], ("ctrl", "s"))
-        self.assertEqual(events[2][1][1:], ("enter",))
+        self.assertEqual(events[2][1], ("enter",))
         # Every recorded call observed dismiss depth >= 1, proving the
         # whole sequence ran inside `no_dismiss()`.
         for name, _, depth in events:
@@ -167,7 +169,7 @@ class TestVerbsTouched(unittest.TestCase):
         expected = {
             "click", "double_click", "right_click",
             "click_when_enabled", "click_after",
-            "fill", "type", "hotkey",
+            "fill", "type", "key", "hotkey",
             "is_visible", "is_enabled", "is_color", "check_color",
             "wait_visible", "wait_enabled", "wait_gone",
             "read_info", "read_clipboard", "each", "no_dismiss",

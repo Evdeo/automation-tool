@@ -18,6 +18,7 @@ from core.verbs import (
     # text input
     fill,
     type,
+    key,
     hotkey,
     # checks / waits
     is_visible,
@@ -48,7 +49,7 @@ from core.verbs import (
 
 __all__ = [
     "click", "double_click", "right_click", "click_when_enabled", "click_after",
-    "fill", "type", "hotkey",
+    "fill", "type", "key", "hotkey",
     "is_visible", "is_enabled", "is_color", "check_color",
     "wait_visible", "wait_enabled", "wait_gone",
     "read_info",
