@@ -288,6 +288,77 @@ def _runtime_id(ctrl):
         return ()
 
 
+# ARIA-role aliases used when building `role[name="..."]` composite
+# selectors as a fallback for elements with non-unique accessible names.
+_ARIA_KNOWN_ROLES = {
+    "ButtonControl": "button",
+    "HyperlinkControl": "link",
+    "EditControl": "textbox",
+    "CheckBoxControl": "checkbox",
+    "RadioButtonControl": "radio",
+}
+
+
+def _is_browser_window(win):
+    """True if `win`'s top-level Win32 class is a known browser /
+    Electron container (Chromium, Firefox). Used to decide whether to
+    extract a web-style CSS selector from the captured leaf instead of
+    emitting a positional struct_id (the latter is unstable across
+    page re-renders)."""
+    try:
+        from core.verbs import _BROWSER_WINDOW_CLASSES
+        return (win.ClassName or "") in _BROWSER_WINDOW_CLASSES
+    except Exception:
+        return False
+
+
+def _extract_web_selector(leaf, walked):
+    """Build a stable CSS selector for a captured web element from
+    UIA properties the browser exposes. Returns None when nothing
+    usable is available (caller falls back to struct_id).
+
+    Priority:
+      1. DOM `id` attribute (UIA AutomationId on browsers) → `#login`
+      2. Unique accessible name (visible text / aria-label) →
+         `[aria-label="Sign in"]`
+      3. Role + name composite for non-unique names where role is in
+         a small ARIA-known set → `button[name="Save"]`
+      4. None — caller emits struct_id with a warning comment.
+
+    Uniqueness in (2) is checked against the already-walked tree
+    (`tree.walk_live(win)` ran in `_path_to_chain`); we don't pay for
+    a second tree walk."""
+    try:
+        auto_id = (leaf.AutomationId or "").strip()
+    except Exception:
+        auto_id = ""
+    if auto_id:
+        return f"#{auto_id}"
+
+    try:
+        name = (leaf.Name or "").strip()
+        role = leaf.ControlTypeName or ""
+    except Exception:
+        return None
+    if not name:
+        return None
+
+    same_name = sum(1 for n in walked if (n.get("name") or "") == name)
+    if same_name == 1:
+        return f'[aria-label="{name}"]'
+
+    role_short = _ARIA_KNOWN_ROLES.get(role)
+    if role_short:
+        same_pair = sum(
+            1 for n in walked
+            if (n.get("name") or "") == name and n.get("role") == role
+        )
+        if same_pair == 1:
+            return f'{role_short}[name="{name}"]'
+
+    return None
+
+
 def _find_interactable_ancestor(chain):
     if not chain or len(chain) < 2:
         return None
@@ -577,6 +648,13 @@ def _gather_unsafe(x, y):
     walked = tree.walk_live(win)
     leaf, chain, name_path, struct_id = _path_to_chain(win, x, y, walked=walked)
 
+    # Web captures: when the top-level window is a browser, try to
+    # build a stable CSS selector from UIA properties (DOM id /
+    # aria-label / role+name). Falls back to struct_id with a warning
+    # comment at emit time when nothing usable is available.
+    web_capture = _is_browser_window(win)
+    web_selector = _extract_web_selector(leaf, walked) if web_capture else None
+
     bbox = None
     bbox_center = (None, None)
     color = None
@@ -606,6 +684,8 @@ def _gather_unsafe(x, y):
         "color": color,
         "window_name": window_name,
         "runtime_id": _runtime_id(leaf),
+        "web_capture": web_capture,
+        "web_selector": web_selector,
         "interactable_ancestor": _find_interactable_ancestor(chain),
     }
 
@@ -624,6 +704,10 @@ def _emit_minimal(info):
     _emit("-" * 60)
     _emit(f'window       : {info.get("window_name", "?")}')
     _emit(f'commit       : "{info["struct_id"]}"')
+    if info.get("web_selector"):
+        _emit(f'identifier   : "{info["web_selector"]}"')
+    elif info.get("web_capture"):
+        _emit(f'identifier   : (none — DevTools may help; struct_id will be emitted)')
     _emit(f'name         : "{info["name"]}"')
     _emit(f'control type : {info["control_type"]}')
     _emit(f'color        : {_format_color(info["color"])}')
@@ -732,6 +816,9 @@ def _commit(info):
         "bbox_center": info["bbox_center"],
         "color": info["color"],
         "window_name": window_name,
+        "runtime_id": info.get("runtime_id", ()),
+        "web_capture": info.get("web_capture", False),
+        "web_selector": info.get("web_selector"),
         "interactable_ancestor": info["interactable_ancestor"],
         "default_name": suggested,
         "final_name": None,
@@ -963,7 +1050,20 @@ def _build_session_block():
             if not final:
                 continue
             label = _readable_label(cap)
-            lines.append(f'{final:<{width}} = "{cap["struct_id"]}"  # {label}')
+            web_selector = cap.get("web_selector")
+            if web_selector:
+                # Web capture with a stable CSS selector — preferred locator.
+                lines.append(f'{final:<{width}} = "{web_selector}"  # {label}')
+            elif cap.get("web_capture"):
+                # Web capture but no usable selector — emit struct_id and
+                # warn the user that this snippet is brittle.
+                lines.append(
+                    f'{final:<{width}} = "{cap["struct_id"]}"  # {label}'
+                    f'  (no stable web selector — DevTools may help)'
+                )
+            else:
+                # Native capture — struct_id as today.
+                lines.append(f'{final:<{width}} = "{cap["struct_id"]}"  # {label}')
         lines.append("")
 
     if unbound:

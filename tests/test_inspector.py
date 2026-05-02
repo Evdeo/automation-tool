@@ -406,6 +406,104 @@ class TestPathToChain(unittest.TestCase):
         self.assertEqual(struct_id, "0.1")
 
 
+# --- Web selector extraction ------------------------------------------------
+
+
+class TestIsBrowserWindow(unittest.TestCase):
+    """`_is_browser_window` decides whether to extract a CSS selector or
+    fall back to struct_id. Browser detection is by Win32 class name —
+    the same set already protected by the auto-dismiss skip list."""
+
+    def test_chrome_class_is_browser(self):
+        win = FakeCtrl(name="Tab", class_name="Chrome_WidgetWin_1")
+        self.assertTrue(inspector._is_browser_window(win))
+
+    def test_firefox_class_is_browser(self):
+        win = FakeCtrl(name="Tab", class_name="MozillaWindowClass")
+        self.assertTrue(inspector._is_browser_window(win))
+
+    def test_notepad_class_is_not_browser(self):
+        win = FakeCtrl(name="Notepad", class_name="Notepad")
+        self.assertFalse(inspector._is_browser_window(win))
+
+    def test_missing_class_name_is_not_browser(self):
+        win = FakeCtrl(name="Empty")  # default class_name=""
+        self.assertFalse(inspector._is_browser_window(win))
+
+
+class TestExtractWebSelector(unittest.TestCase):
+    """Priority order: AutomationId (DOM id) > unique aria-label >
+    role+name composite > None (struct_id fallback)."""
+
+    def _walked_node(self, ctrl):
+        # Minimal walked-list entry; only `name` and `role` are
+        # consulted by the uniqueness check.
+        return {"name": ctrl.Name, "role": ctrl.ControlTypeName,
+                "ctrl": ctrl}
+
+    def test_dom_id_wins(self):
+        """Element with AutomationId='login' (the DOM `id` attribute)
+        always wins — it's the most stable web identifier."""
+        leaf = FakeCtrl(
+            name="Sign in", automation_id="login",
+            control_type="ButtonControl",
+        )
+        sel = inspector._extract_web_selector(
+            leaf, [self._walked_node(leaf)],
+        )
+        self.assertEqual(sel, "#login")
+
+    def test_unique_name_emits_aria_label(self):
+        """No AutomationId, but accessible name is unique within the
+        page subtree → emit `[aria-label="..."]`. Robust against minor
+        DOM reshuffles since it doesn't depend on position."""
+        leaf = FakeCtrl(
+            name="Sign in", control_type="ButtonControl",
+        )
+        sel = inspector._extract_web_selector(
+            leaf, [self._walked_node(leaf)],
+        )
+        self.assertEqual(sel, '[aria-label="Sign in"]')
+
+    def test_ambiguous_name_uses_role_composite(self):
+        """Two elements share the same name; role-known fallback emits
+        `button[name="Save"]`."""
+        a = FakeCtrl(name="Save", control_type="ButtonControl")
+        b = FakeCtrl(name="Save", control_type="TextControl")
+        walked = [self._walked_node(a), self._walked_node(b)]
+        sel = inspector._extract_web_selector(a, walked)
+        self.assertEqual(sel, 'button[name="Save"]')
+
+    def test_unknown_role_with_ambiguous_name_returns_none(self):
+        """Two elements share name and we don't have a CSS-friendly
+        ARIA role for the type → fall through to None (struct_id
+        fallback at emit time)."""
+        a = FakeCtrl(name="Caption", control_type="GroupControl")
+        b = FakeCtrl(name="Caption", control_type="GroupControl")
+        walked = [self._walked_node(a), self._walked_node(b)]
+        self.assertIsNone(inspector._extract_web_selector(a, walked))
+
+    def test_no_id_no_name_returns_none(self):
+        leaf = FakeCtrl(control_type="ButtonControl")  # name=""
+        self.assertIsNone(
+            inspector._extract_web_selector(
+                leaf, [self._walked_node(leaf)],
+            ),
+        )
+
+    def test_dom_id_beats_name_uniqueness(self):
+        """Even when name would also be unique, AutomationId wins
+        because DOM `id` is the most stable selector."""
+        leaf = FakeCtrl(
+            name="Sign in", automation_id="login",
+            control_type="ButtonControl",
+        )
+        sel = inspector._extract_web_selector(
+            leaf, [self._walked_node(leaf)],
+        )
+        self.assertEqual(sel, "#login")
+
+
 # --- Suggested name disambiguation ------------------------------------------
 
 
@@ -1064,6 +1162,81 @@ class TestSessionEnd(unittest.TestCase):
         block = mp.copy.call_args[0][0]
         self.assertIn("SAVE", block)
         self.assertIn("0.9", block)
+
+
+# --- Web selector emission in copy-paste block ------------------------------
+
+
+class TestSessionEndEmitsWebSelector(unittest.TestCase):
+    """`_render_group` (inside `_build_session_block`) prefers the web
+    CSS selector over struct_id when the capture has one. Native
+    captures (no `web_capture`) emit struct_id, exactly as today."""
+
+    def setUp(self):
+        _reset_state()
+        self.stdout_patcher = mock.patch.object(
+            inspector.sys, "stdout", new=io.StringIO(),
+        )
+        self.stdout_patcher.start()
+
+    def tearDown(self):
+        self.stdout_patcher.stop()
+        _reset_state()
+
+    def _push(self, name, struct_id, label, web_capture=False,
+              web_selector=None):
+        inspector._captures.append({
+            "final_name": name,
+            "struct_id": struct_id,
+            "name_path": f"App:WindowControl/{label}:ButtonControl",
+            "name": label,
+            "web_capture": web_capture,
+            "web_selector": web_selector,
+        })
+
+    def test_native_capture_emits_struct_id(self):
+        # Behaviour preserved for Windows apps: no web_capture flag,
+        # no selector, struct_id wins.
+        self._push("SAVE", "0.2.0", "Save")
+        with mock.patch.object(inspector, "pyperclip") as mp:
+            inspector._emit_session_end()
+        block = mp.copy.call_args[0][0]
+        self.assertEqual(block, 'SAVE = "0.2.0"  # Save')
+
+    def test_web_capture_with_selector_emits_selector(self):
+        # Web capture with a usable CSS selector — selector wins.
+        self._push("LOGIN", "0.5.3.2", "Sign in",
+                   web_capture=True, web_selector="#login")
+        with mock.patch.object(inspector, "pyperclip") as mp:
+            inspector._emit_session_end()
+        block = mp.copy.call_args[0][0]
+        self.assertEqual(block, 'LOGIN = "#login"  # Sign in')
+
+    def test_web_capture_without_selector_emits_struct_id_with_warning(self):
+        # Web capture but UIA exposed nothing usable — fall back to
+        # struct_id with a warning so the user knows it's brittle.
+        self._push("WIDGET", "0.5.3.2", "Widget", web_capture=True,
+                   web_selector=None)
+        with mock.patch.object(inspector, "pyperclip") as mp:
+            inspector._emit_session_end()
+        block = mp.copy.call_args[0][0]
+        self.assertIn('WIDGET = "0.5.3.2"', block)
+        self.assertIn("# Widget", block)
+        self.assertIn("no stable web selector", block)
+
+    def test_mixed_native_and_web_in_one_session(self):
+        # Realistic multi-app session: Notepad (native) + a browser
+        # tab (web). Each emits its right form.
+        self._push("NOTEPAD_FILE", "0.2.0.0.0", "File")
+        self._push("LOGIN_BTN", "0.5.3.2", "Sign in",
+                   web_capture=True, web_selector="#login")
+        with mock.patch.object(inspector, "pyperclip") as mp:
+            inspector._emit_session_end()
+        block = mp.copy.call_args[0][0]
+        # Width is max(len("NOTEPAD_FILE"), len("LOGIN_BTN")) = 12, so
+        # NOTEPAD_FILE has no extra padding, LOGIN_BTN gets 3 spaces.
+        self.assertIn('NOTEPAD_FILE = "0.2.0.0.0"  # File', block)
+        self.assertIn('LOGIN_BTN    = "#login"  # Sign in', block)
 
 
 # --- Full info dump ---------------------------------------------------------

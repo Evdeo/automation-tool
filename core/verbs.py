@@ -90,6 +90,17 @@ def _hwnd_class(hwnd):
 # whether they're in `_expected_hwnds` or owned by a trusted PID.
 # Defense in depth: a bug in test setup (or anywhere else) can't
 # cascade into killing the developer's terminal / shell / IDE.
+# Browser / Electron window classes — used in two places: protected by
+# the auto-dismiss skip list (so a coord-based click can't accidentally
+# close the host browser), and consulted by the inspector to detect
+# "this capture is a web element" so it can extract a CSS selector
+# instead of a positional struct_id.
+_BROWSER_WINDOW_CLASSES = frozenset({
+    "Chrome_WidgetWin_1",                                # Chromium + Electron
+    "Chrome_WidgetWin_0",                                # variant
+    "MozillaWindowClass",                                # Firefox
+})
+
 _SYSTEM_WINDOW_CLASSES = frozenset({
     "Shell_TrayWnd", "Shell_SecondaryTrayWnd",          # taskbar
     "Progman", "WorkerW",                                # desktop shell
@@ -97,14 +108,7 @@ _SYSTEM_WINDOW_CLASSES = frozenset({
     "WindowsTerminal",                                   # Win Terminal
     "CASCADIA_HOSTING_WINDOW_CLASS",                     # Win Terminal host
     "mintty",                                            # Git Bash
-    # Browsers / Electron — protect Chrome / Edge / Brave / Firefox /
-    # Electron-based desktop apps (Slack, VS Code, Discord, Spotify…)
-    # so coordinate-based clicks via `web_coords` + `click_at` don't
-    # let another verb's pre-dismiss close the host browser window.
-    "Chrome_WidgetWin_1",                                # Chromium + Electron
-    "Chrome_WidgetWin_0",                                # variant
-    "MozillaWindowClass",                                # Firefox
-})
+}) | _BROWSER_WINDOW_CLASSES
 
 
 _SYSTEM_PROCESS_NAMES = frozenset({
