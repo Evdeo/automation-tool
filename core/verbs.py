@@ -76,6 +76,54 @@ def _hwnd_pid(hwnd):
         return 0
 
 
+def _hwnd_class(hwnd):
+    """Win32 class name of `hwnd`, or "" if it can't be read."""
+    buf = _ctypes.create_unicode_buffer(256)
+    try:
+        _user32.GetClassNameW(hwnd, buf, 256)
+        return buf.value
+    except Exception:
+        return ""
+
+
+# Hard skip list — windows we will NEVER auto-dismiss, regardless of
+# whether they're in `_expected_hwnds` or owned by a trusted PID.
+# Defense in depth: a bug in test setup (or anywhere else) can't
+# cascade into killing the developer's terminal / shell / IDE.
+_SYSTEM_WINDOW_CLASSES = frozenset({
+    "Shell_TrayWnd", "Shell_SecondaryTrayWnd",          # taskbar
+    "Progman", "WorkerW",                                # desktop shell
+    "ConsoleWindowClass",                                # cmd.exe
+    "WindowsTerminal",                                   # Win Terminal
+    "CASCADIA_HOSTING_WINDOW_CLASS",                     # Win Terminal host
+    "mintty",                                            # Git Bash
+})
+
+_SYSTEM_PROCESS_NAMES = frozenset({
+    "explorer.exe", "dwm.exe", "winlogon.exe", "csrss.exe",
+    "windowsterminal.exe", "openconsole.exe", "conhost.exe",
+    "code.exe", "code - insiders.exe",
+    "pycharm64.exe", "idea64.exe", "rider64.exe",
+    "devenv.exe",                                        # Visual Studio
+})
+
+
+def _is_system_window(hwnd):
+    """True if `hwnd` is part of the OS shell, a terminal, or an IDE
+    we should never close. Checked by class name first (cheap) and
+    falling through to the owning process name."""
+    if _hwnd_class(hwnd) in _SYSTEM_WINDOW_CLASSES:
+        return True
+    pid = _hwnd_pid(hwnd)
+    if not pid:
+        return False
+    try:
+        name = (psutil.Process(pid).name() or "").lower()
+    except Exception:
+        return False
+    return name in _SYSTEM_PROCESS_NAMES
+
+
 def _mark_hwnd_expected(hwnd):
     """For `core.app.match` — add a returned HWND to the expected set
     AND mark its owning PID as trusted (so the app's own menus and
@@ -127,8 +175,14 @@ def _dismiss_one(hwnd):
     Order: (1) configured dismiss key (default Esc) — works for most
     modal dialogs that have focus, (2) `WM_CLOSE` Win32 message —
     polite "please close" that doesn't require focus, (3) log + skip.
-    Never escalates to process termination.
+    Never escalates to process termination. System windows (shell,
+    terminals, IDEs) are protected by `_is_system_window` even if a
+    caller bypasses the expected/trusted sets.
     """
+    if _is_system_window(hwnd):
+        db.log("popup_dismiss", hwnd, "", "skipped_system")
+        return False
+
     title = ""
     try:
         title = _hwnd_title(hwnd)
@@ -205,6 +259,10 @@ def _dismiss_unexpected_popups(window=None):
         # toasts, antivirus) come from a different PID and still get
         # dismissed.
         if _hwnd_pid(hwnd) in _trusted_pids:
+            continue
+        # `_dismiss_one` itself enforces the system-window skip list,
+        # but checking here too avoids the unnecessary log row.
+        if _is_system_window(hwnd):
             continue
         _dismiss_one(hwnd)
     if config.POPUP_CHECK_DEEP and window is not None:
@@ -448,6 +506,7 @@ def each(verb, window: Control, ids, **kwargs) -> list:
                     new_unexpected = {
                         h for h in current - _hwnd_baseline_set - _expected_hwnds
                         if _hwnd_pid(h) not in _trusted_pids
+                        and not _is_system_window(h)
                     }
                     if new_unexpected:
                         for hwnd in new_unexpected:

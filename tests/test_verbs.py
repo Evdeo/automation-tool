@@ -662,6 +662,52 @@ class TestSynchronousPopupDismiss(_DismissTestBase):
         self.assertIn(123, verbs._expected_hwnds)
         self.assertIn(7777, verbs._trusted_pids)
 
+    def test_system_class_is_never_dismissed(self):
+        """`_dismiss_one` hard-skips windows whose class is in the
+        system list — regardless of whether the caller bypassed the
+        expected/trusted checks. Defense in depth: even a buggy test
+        setup can't kill the developer's terminal."""
+        with mock.patch.object(verbs, "_hwnd_class",
+                               return_value="ConsoleWindowClass"), \
+             mock.patch.object(verbs, "_send_dismiss_key") as mkey, \
+             mock.patch.object(verbs._user32, "PostMessageW") as mpm:
+            result = verbs._dismiss_one(123)
+        self.assertFalse(result, "system window dismiss must return False")
+        mkey.assert_not_called()
+        mpm.assert_not_called()
+
+    def test_system_process_is_never_dismissed(self):
+        """Process-name fallback: even if class isn't in the list,
+        explorer.exe / dwm.exe / Code.exe etc. are protected."""
+        fake_proc = mock.MagicMock()
+        fake_proc.name.return_value = "explorer.exe"
+        with mock.patch.object(verbs, "_hwnd_class",
+                               return_value="SomeRandomClass"), \
+             mock.patch.object(verbs, "_hwnd_pid", return_value=42), \
+             mock.patch.object(verbs.psutil, "Process",
+                               return_value=fake_proc), \
+             mock.patch.object(verbs, "_send_dismiss_key") as mkey:
+            result = verbs._dismiss_one(123)
+        self.assertFalse(result)
+        mkey.assert_not_called()
+
+    def test_dismiss_unexpected_skips_system_windows(self):
+        """The pre-dismiss loop must skip system windows even when
+        they're not in `_expected_hwnds` and not owned by a trusted
+        PID."""
+        # Mock so HWND 999 looks like the developer's terminal.
+        def fake_class(h):
+            return "WindowsTerminal" if h == 999 else "PopupClass"
+        with mock.patch("core.app._enumerate_top_level_hwnds",
+                        return_value=[999, 111]), \
+             mock.patch.object(verbs, "_hwnd_class",
+                               side_effect=fake_class), \
+             mock.patch.object(verbs, "_hwnd_pid", return_value=0), \
+             mock.patch.object(verbs, "_dismiss_one") as mdo:
+            verbs._dismiss_unexpected_popups(window=None)
+        # 111 (foreign popup) gets dismissed; 999 (terminal) does not.
+        mdo.assert_called_once_with(111)
+
     def test_action_verb_runs_dismiss_before_inner_call(self):
         """The `_action_verb` decorator must call dismiss BEFORE the
         wrapped function (so popups don't intercept the click)."""

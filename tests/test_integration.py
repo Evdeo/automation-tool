@@ -347,6 +347,198 @@ class TestPopupDismissDuringEach(WindowsUITestBase):
                 popup.wait(timeout=3)
 
 
+class TestVerbPostConditions(WindowsUITestBase):
+    """End-to-end verification that each verb produces the side effect
+    its docstring promises — not just "didn't raise." Covers the five
+    verbs that didn't have a strict integration test before:
+    `right_click`, `double_click`, `click_after`, `key`, `is_color`.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from core import verbs
+        # Notepad was launched via `apps.open_app` (not `match()`), so
+        # its HWND/PID isn't in the verb-level expected/trusted sets.
+        # CRITICAL: seed `_expected_hwnds` from the *entire* current
+        # top-level HWND list first — otherwise the action verb
+        # decorator's pre-dismiss will WM_CLOSE the developer's
+        # terminal, IDE, browser, etc. (anything not owned by Notepad)
+        # the first time a verb runs in the test.
+        verbs._seed_expected_from_current()
+        verbs._mark_hwnd_expected(self.win.NativeWindowHandle)
+
+    def _editor_text(self):
+        """Read the editor's current text via UIA ValuePattern."""
+        for n in tree.walk_live(self.win):
+            if n["role"] == "DocumentControl":
+                try:
+                    return n["ctrl"].GetValuePattern().Value or ""
+                except Exception:
+                    return ""
+        return ""
+
+    def test_right_click_opens_context_menu(self):
+        """`right_click(EDITOR)` must open a context menu. Win11
+        Notepad's context menu lives in a separate `Pop-upHost`
+        top-level HWND (NOT inside `self.win`'s tree), so the proof is
+        a NEW top-level HWND that contains MenuItemControls."""
+        from core import verbs
+        from core.app import _enumerate_top_level_hwnds
+        # Plant a marker so the editor isn't empty.
+        actions.write_text(self.win, "Text editor:DocumentControl",
+                           "right_click_target")
+        time.sleep(0.3)
+
+        before = set(_enumerate_top_level_hwnds())
+        verbs.right_click(self.win, "Text editor:DocumentControl")
+        time.sleep(0.7)
+        new_hwnds = set(_enumerate_top_level_hwnds()) - before
+
+        try:
+            self.assertGreater(
+                len(new_hwnds), 0,
+                "right_click should spawn a context-menu HWND",
+            )
+            # The new HWND should contain at least one MenuItemControl
+            # (proves it's actually a menu, not some unrelated popup).
+            menu_item_total = 0
+            for h in new_hwnds:
+                try:
+                    ctrl = auto.ControlFromHandle(h)
+                except Exception:
+                    continue
+                if ctrl is None:
+                    continue
+                walked = tree.walk_live(ctrl)
+                menu_item_total += sum(1 for n in walked
+                                       if n["role"] == "MenuItemControl")
+            self.assertGreater(
+                menu_item_total, 0,
+                f"right_click should produce a menu with MenuItemControls; "
+                f"new HWNDs were {new_hwnds} but contained none",
+            )
+        finally:
+            import pyautogui
+            pyautogui.press("escape")
+            time.sleep(0.3)
+
+    def test_double_click_selects_word(self):
+        """`double_click(EDITOR)` must select the word under the click
+        point. Verified by Ctrl+C → `read_clipboard`: the clipboard
+        should contain just that one word, not the whole document."""
+        from core import verbs
+        # Fill the editor with a sea of one repeated word so the click
+        # center hits a "MARKER" no matter where it lands. Whitespace
+        # is the word boundary, so double-click selects exactly one
+        # MARKER (length 6), not the whole field.
+        body = "MARKER " * 80
+        actions.write_text(self.win, "Text editor:DocumentControl", body)
+        time.sleep(0.3)
+        # Clear clipboard so a stale value can't masquerade as success.
+        import pyperclip
+        pyperclip.copy("__pre_test_clipboard__")
+
+        verbs.double_click(self.win, "Text editor:DocumentControl")
+        time.sleep(0.3)
+        # Use raw pyautogui so we don't drag focus around.
+        import pyautogui
+        pyautogui.hotkey("ctrl", "c")
+        time.sleep(0.3)
+
+        clipboard = pyperclip.paste().strip()
+        self.assertEqual(
+            clipboard, "MARKER",
+            f"double_click should select exactly one word; got {clipboard!r}",
+        )
+
+    def test_click_after_honours_delay_and_clicks(self):
+        """`click_after(id, delay)` sleeps for `delay`, then clicks.
+        Verifies BOTH halves: the elapsed time matches the delay (within
+        slack) AND the click actually landed (File menu opens)."""
+        from core import verbs
+        delay = 0.8
+        t0 = time.time()
+        verbs.click_after(self.win, "File:MenuItemControl", delay=delay)
+        elapsed = time.time() - t0
+        try:
+            # Lower bound: delay actually happened (allow 50ms slack
+            # for scheduler jitter).
+            self.assertGreaterEqual(
+                elapsed, delay - 0.05,
+                f"click_after should sleep for at least {delay}s; "
+                f"observed {elapsed:.3f}s",
+            )
+            # Upper bound: not absurdly slow (delay + click time + UIA
+            # resolution; 5s is generous for CI).
+            self.assertLess(
+                elapsed, 5.0,
+                f"click_after took {elapsed:.3f}s — slower than expected",
+            )
+            # Click landed: File menu opened, so New tab is now reachable.
+            self.assertTrue(
+                actions.is_present(self.win, "New tab:MenuItemControl",
+                                   timeout=2),
+                "click_after should have fired the File-menu click; "
+                "menu didn't open",
+            )
+        finally:
+            import pyautogui
+            pyautogui.press("escape")
+            time.sleep(0.3)
+
+    def test_key_sends_combo_to_current_focus(self):
+        """`key("ctrl", "a")` + `key("ctrl", "c")` must operate on
+        whatever currently has keyboard focus — proven by typing
+        text, selecting + copying via `key`, and round-tripping
+        through the clipboard."""
+        from core import verbs
+        marker = "key_verb_marker_xyz123"
+        actions.write_text(self.win, "Text editor:DocumentControl", marker)
+        time.sleep(0.3)
+        import pyperclip
+        pyperclip.copy("__pre_key_test__")
+
+        verbs.key("ctrl", "a")
+        time.sleep(0.2)
+        verbs.key("ctrl", "c")
+        time.sleep(0.3)
+
+        clipboard = pyperclip.paste().strip()
+        self.assertIn(
+            marker, clipboard,
+            f"key('ctrl','a') + key('ctrl','c') should round-trip the "
+            f"editor text; clipboard={clipboard!r}",
+        )
+
+    def test_is_color_distinguishes_match_from_mismatch(self):
+        """`is_color` must return True for the actual sampled color
+        AND False for a deliberately-wrong color. Self-match alone is
+        a tautology — discriminative power is what matters."""
+        from core import verbs
+        actual = verbs.check_color(self.win, "File:MenuItemControl")
+        # True path: exact match against the live sample.
+        self.assertTrue(
+            verbs.is_color(self.win, "File:MenuItemControl", actual,
+                           tolerance=0),
+            f"is_color should return True for the actual sampled "
+            f"color {actual}",
+        )
+        # False path: a color obviously different from the actual one.
+        # Pick the channel-flipped opposite so it can't accidentally
+        # be within tolerance.
+        wrong = tuple(255 - c for c in actual)
+        # If the actual color is near-grey-50 the flip might still be
+        # close; bias toward magenta to be safe.
+        if max(abs(a - w) for a, w in zip(actual, wrong)) < 100:
+            wrong = (255, 0, 255) if actual != (255, 0, 255) else (0, 255, 0)
+        self.assertFalse(
+            verbs.is_color(self.win, "File:MenuItemControl", wrong,
+                           tolerance=0),
+            f"is_color should return False for {wrong} when actual "
+            f"is {actual}",
+        )
+
+
 class TestWaitUntilAbsent(WindowsUITestBase):
     def test_returns_true_after_menu_closed(self):
         # Open File menu, confirm New tab is in tree, press Esc, assert
