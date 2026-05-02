@@ -503,6 +503,43 @@ class TestExtractWebSelector(unittest.TestCase):
         )
         self.assertEqual(sel, "#login")
 
+    def test_class_name_used_when_no_id_no_name(self):
+        """No id, no accessible name — fall back to HTML class. Many
+        SPA frameworks generate elements that have neither id nor
+        accessible name, but always have CSS classes for styling."""
+        leaf = FakeCtrl(
+            class_name="btn-primary", control_type="GroupControl",
+        )
+        sel = inspector._extract_web_selector(
+            leaf, [self._walked_node(leaf)],
+        )
+        self.assertEqual(sel, ".btn-primary")
+
+    def test_multiple_classes_become_compound_selector(self):
+        """Browsers expose multiple HTML classes as a single
+        space-separated ClassName. CSS selector form is dot-joined:
+        `class="btn btn-primary"` -> `.btn.btn-primary`."""
+        leaf = FakeCtrl(
+            class_name="btn btn-primary outline",
+            control_type="GroupControl",
+        )
+        sel = inspector._extract_web_selector(
+            leaf, [self._walked_node(leaf)],
+        )
+        self.assertEqual(sel, ".btn.btn-primary.outline")
+
+    def test_class_used_when_name_present_but_ambiguous_and_no_role(self):
+        """Name is non-unique AND role isn't in the ARIA-known set —
+        the role-composite check fails, so we fall through to class."""
+        a = FakeCtrl(
+            name="Caption", control_type="GroupControl",
+            class_name="caption-row",
+        )
+        b = FakeCtrl(name="Caption", control_type="GroupControl")
+        walked = [self._walked_node(a), self._walked_node(b)]
+        sel = inspector._extract_web_selector(a, walked)
+        self.assertEqual(sel, ".caption-row")
+
 
 # --- Suggested name disambiguation ------------------------------------------
 

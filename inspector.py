@@ -323,7 +323,9 @@ def _extract_web_selector(leaf, walked):
          `[aria-label="Sign in"]`
       3. Role + name composite for non-unique names where role is in
          a small ARIA-known set → `button[name="Save"]`
-      4. None — caller emits struct_id with a warning comment.
+      4. HTML `class` attribute (UIA ClassName on Firefox / Chromium
+         when no name and no id) → `.btn.btn-primary`
+      5. None — caller emits struct_id with a warning comment.
 
     Uniqueness in (2) is checked against the already-walked tree
     (`tree.walk_live(win)` ran in `_path_to_chain`); we don't pay for
@@ -339,22 +341,36 @@ def _extract_web_selector(leaf, walked):
         name = (leaf.Name or "").strip()
         role = leaf.ControlTypeName or ""
     except Exception:
-        return None
-    if not name:
-        return None
+        name, role = "", ""
 
-    same_name = sum(1 for n in walked if (n.get("name") or "") == name)
-    if same_name == 1:
-        return f'[aria-label="{name}"]'
+    if name:
+        same_name = sum(1 for n in walked if (n.get("name") or "") == name)
+        if same_name == 1:
+            return f'[aria-label="{name}"]'
 
-    role_short = _ARIA_KNOWN_ROLES.get(role)
-    if role_short:
-        same_pair = sum(
-            1 for n in walked
-            if (n.get("name") or "") == name and n.get("role") == role
-        )
-        if same_pair == 1:
-            return f'{role_short}[name="{name}"]'
+        role_short = _ARIA_KNOWN_ROLES.get(role)
+        if role_short:
+            same_pair = sum(
+                1 for n in walked
+                if (n.get("name") or "") == name and n.get("role") == role
+            )
+            if same_pair == 1:
+                return f'{role_short}[name="{name}"]'
+
+    # Priority 4: HTML `class` attribute. Browsers expose it via UIA
+    # ClassName (Firefox always; Chromium when accessibility is on).
+    # Multiple classes on one element come through space-separated:
+    # `"btn btn-primary"` -> `.btn.btn-primary`. Non-unique by nature
+    # but better than nothing — tells the user roughly which element
+    # they clicked, and they can refine in their script if needed.
+    try:
+        cls = (leaf.ClassName or "").strip()
+    except Exception:
+        cls = ""
+    if cls:
+        parts = [p for p in cls.split() if p]
+        if parts:
+            return "." + ".".join(parts)
 
     return None
 
