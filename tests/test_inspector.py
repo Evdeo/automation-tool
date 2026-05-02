@@ -130,50 +130,76 @@ class TestFormatColor(unittest.TestCase):
         )
 
 
-class TestIsDescendantOrSame(unittest.TestCase):
-    """The dotted-index path test: a struct_id is a descendant of `last`
-    iff it equals `last` or starts with `last + "."`. Pure prefix logic
-    on dotted integers."""
+class TestIsSameOrDescendant(unittest.TestCase):
+    """`_is_same_or_descendant(info, last)` decides whether two presses
+    are on the same UIA element (or the new one is geometrically inside
+    the previous). Identity is via UIA `RuntimeId`; descendant is via
+    bbox containment. struct_id deliberately is NOT consulted — paths
+    are positional and a tree reshape (submenu open/close) can leave
+    two different elements sharing the same struct_id."""
 
-    def test_identical_ids_match(self):
-        self.assertTrue(
-            inspector._is_descendant_or_same("0.2.0", "0.2.0")
-        )
+    def _info(self, *, runtime_id=(), bbox=None, window_name="app"):
+        return {
+            "runtime_id": tuple(runtime_id),
+            "bbox": bbox,
+            "window_name": window_name,
+        }
 
-    def test_direct_child_matches(self):
-        self.assertTrue(
-            inspector._is_descendant_or_same("0.2.0.3", "0.2.0")
-        )
+    def test_same_runtime_id_is_same_element(self):
+        a = self._info(runtime_id=(42, 100), bbox=(0, 0, 100, 50))
+        b = self._info(runtime_id=(42, 100), bbox=(5, 5, 95, 45))
+        self.assertTrue(inspector._is_same_or_descendant(a, b))
 
-    def test_deeper_descendant_matches(self):
-        self.assertTrue(
-            inspector._is_descendant_or_same("0.2.0.3.4.5", "0.2.0")
-        )
+    def test_different_runtime_id_same_struct_id_is_NOT_same(self):
+        # Regression for the bug: View>Zoom and Zoom>Zoom in both sit at
+        # struct_id "0.0.0.0.0.0" at different times. RuntimeId distinguishes
+        # them; struct_id can't.
+        a = self._info(runtime_id=(1, 100), bbox=(0, 0, 100, 50))
+        b = self._info(runtime_id=(1, 200), bbox=(0, 100, 100, 150))
+        self.assertFalse(inspector._is_same_or_descendant(a, b))
 
-    def test_sibling_does_not_match(self):
-        self.assertFalse(
-            inspector._is_descendant_or_same("0.2.1", "0.2.0")
-        )
+    def test_geometric_descendant_matches(self):
+        # Inner element (no RuntimeId) sits inside last bbox.
+        outer = self._info(runtime_id=(), bbox=(0, 0, 100, 100))
+        inner = self._info(runtime_id=(), bbox=(20, 20, 80, 80))
+        self.assertTrue(inspector._is_same_or_descendant(inner, outer))
 
-    def test_ancestor_does_not_match(self):
-        # Last commit was a child; cursor moved up to its parent. That's
-        # treated as a fresh element, not a second press.
-        self.assertFalse(
-            inspector._is_descendant_or_same("0.2", "0.2.0")
-        )
+    def test_geometric_non_descendant_does_not_match(self):
+        a = self._info(runtime_id=(), bbox=(200, 200, 300, 300))
+        b = self._info(runtime_id=(), bbox=(0, 0, 100, 100))
+        self.assertFalse(inspector._is_same_or_descendant(a, b))
 
-    def test_unrelated_branch_does_not_match(self):
-        self.assertFalse(
-            inspector._is_descendant_or_same("1.0.0", "0.2.0")
-        )
+    def test_partial_overlap_is_not_descendant(self):
+        # New bbox extends beyond last bbox — not a descendant.
+        a = self._info(runtime_id=(), bbox=(50, 50, 200, 200))
+        b = self._info(runtime_id=(), bbox=(0, 0, 100, 100))
+        self.assertFalse(inspector._is_same_or_descendant(a, b))
 
-    def test_prefix_without_segment_boundary_does_not_match(self):
-        # "0.20" starts with "0.2" textually, but isn't a descendant of
-        # "0.2" — they're siblings under "0". The dot guard prevents the
-        # false positive.
-        self.assertFalse(
-            inspector._is_descendant_or_same("0.20", "0.2")
-        )
+    def test_different_window_never_matches(self):
+        a = self._info(runtime_id=(1,), bbox=(0, 0, 10, 10),
+                       window_name="notepad")
+        b = self._info(runtime_id=(1,), bbox=(0, 0, 10, 10),
+                       window_name="calc")
+        self.assertFalse(inspector._is_same_or_descendant(a, b))
+
+    def test_empty_runtime_id_falls_through_to_bbox(self):
+        # GetRuntimeId can fail — empty tuple. Match must still work
+        # via bbox containment.
+        a = self._info(runtime_id=(), bbox=(20, 20, 30, 30))
+        b = self._info(runtime_id=(), bbox=(0, 0, 100, 100))
+        self.assertTrue(inspector._is_same_or_descendant(a, b))
+
+    def test_missing_bbox_with_no_runtime_match_returns_false(self):
+        a = self._info(runtime_id=(), bbox=None)
+        b = self._info(runtime_id=(), bbox=(0, 0, 100, 100))
+        self.assertFalse(inspector._is_same_or_descendant(a, b))
+
+    def test_runtime_match_wins_even_if_bbox_disagrees(self):
+        # Same UIA element, but the user resized the window between
+        # presses so bboxes are different. RuntimeId match short-circuits.
+        a = self._info(runtime_id=(7,), bbox=(0, 0, 50, 50))
+        b = self._info(runtime_id=(7,), bbox=(500, 500, 700, 700))
+        self.assertTrue(inspector._is_same_or_descendant(a, b))
 
 
 # --- Interactable ancestor --------------------------------------------------
@@ -688,8 +714,15 @@ class TestHandlePressRouting(unittest.TestCase):
         self.stdout_patcher.stop()
         _reset_state()
 
-    def _info(self, struct_id, name="N"):
+    def _info(self, struct_id, name="N", bbox=(0, 0, 10, 10),
+              runtime_id=(), window_name="app"):
         # Minimal info dict that _handle_press / _commit accept.
+        # `runtime_id` and `bbox` matter for the same-or-descendant
+        # check; pass distinct values when constructing UNRELATED
+        # elements so the new identity-based comparison sees them
+        # as different.
+        cx = (bbox[0] + bbox[2]) // 2
+        cy = (bbox[1] + bbox[3]) // 2
         return {
             "struct_id": struct_id,
             "name_path": f"App:WindowControl/{name}:ButtonControl",
@@ -697,10 +730,12 @@ class TestHandlePressRouting(unittest.TestCase):
             "control_type": "ButtonControl",
             "class_name": "",
             "automation_id": "",
-            "bbox": (0, 0, 10, 10),
-            "bbox_center": (5, 5),
+            "bbox": bbox,
+            "bbox_center": (cx, cy),
             "color": (1, 2, 3),
             "win_stem": "app",
+            "window_name": window_name,
+            "runtime_id": tuple(runtime_id),
             "interactable_ancestor": None,
         }
 
@@ -731,13 +766,20 @@ class TestHandlePressRouting(unittest.TestCase):
         self.assertIsNotNone(inspector._pending_name)
 
     def test_press_on_descendant_dumps_full_info_no_commit(self):
-        # Pre-set a prior commit; pretend the new press lands on a
-        # descendant. The handler must NOT call _commit; it must only
-        # print full info.
-        inspector._last_committed = self._info("0.2.0", "Save")
+        # Pre-set a prior commit (outer button bbox 0..100). New press
+        # lands on a descendant (inner element bbox 20..80, fully
+        # inside the outer). Distinct runtime_ids so identity says
+        # "different element"; bbox containment says "descendant".
+        inspector._last_committed = self._info(
+            "0.2.0", "Save",
+            bbox=(0, 0, 100, 100), runtime_id=(1, 100),
+        )
+        descendant = self._info(
+            "0.2.0.0", "Inner",
+            bbox=(20, 20, 80, 80), runtime_id=(1, 200),
+        )
         with mock.patch.object(
-            inspector, "_gather_element_info",
-            return_value=self._info("0.2.0.0", "Inner"),
+            inspector, "_gather_element_info", return_value=descendant,
         ), mock.patch.object(inspector, "_emit_full") as mef, \
              mock.patch.object(inspector, "_commit") as mc:
             inspector._handle_press(50, 50)
@@ -750,10 +792,14 @@ class TestHandlePressRouting(unittest.TestCase):
         )
 
     def test_press_on_same_element_dumps_full_info(self):
-        inspector._last_committed = self._info("0.2.0", "Save")
+        # Same RuntimeId means same element; this is the canonical
+        # "user pressed the same button twice" case.
+        inspector._last_committed = self._info(
+            "0.2.0", "Save", runtime_id=(7, 42),
+        )
         with mock.patch.object(
             inspector, "_gather_element_info",
-            return_value=self._info("0.2.0", "Save"),
+            return_value=self._info("0.2.0", "Save", runtime_id=(7, 42)),
         ), mock.patch.object(inspector, "_emit_full") as mef, \
              mock.patch.object(inspector, "_commit") as mc:
             inspector._handle_press(50, 50)
@@ -762,9 +808,12 @@ class TestHandlePressRouting(unittest.TestCase):
 
     def test_press_on_unrelated_element_finalizes_and_commits(self):
         # First commit. Open prompt. Press on a totally different element.
-        # Behavior: pending prompt is finalized with current buffer,
-        # then a NEW commit fires.
-        inspector._last_committed = self._info("0.2.0", "Save")
+        # Distinct bboxes that don't contain each other AND distinct
+        # runtime_ids — the new check correctly says "unrelated".
+        inspector._last_committed = self._info(
+            "0.2.0", "Save",
+            bbox=(0, 0, 50, 50), runtime_id=(1, 100),
+        )
         inspector._pending_name = {
             "buffer": "typed",
             "default": "SAVE",
@@ -773,9 +822,12 @@ class TestHandlePressRouting(unittest.TestCase):
             },
         }
         inspector._used_names.add("SAVE")
+        unrelated = self._info(
+            "0.5.1", "Cancel",
+            bbox=(200, 200, 250, 250), runtime_id=(2, 300),
+        )
         with mock.patch.object(
-            inspector, "_gather_element_info",
-            return_value=self._info("0.5.1", "Cancel"),
+            inspector, "_gather_element_info", return_value=unrelated,
         ), mock.patch.object(inspector, "pyperclip"), \
              mock.patch.object(inspector, "_move_cursor"), \
              mock.patch.object(inspector, "_save_step_screenshot"):
@@ -787,6 +839,28 @@ class TestHandlePressRouting(unittest.TestCase):
         # And a NEW commit is now pending under a fresh prompt.
         self.assertIsNotNone(inspector._pending_name)
         self.assertEqual(inspector._last_committed["struct_id"], "0.5.1")
+
+    def test_press_on_same_struct_id_different_runtime_id_commits(self):
+        """Regression for the Zoom/Zoom in bug. Two distinct elements
+        share struct_id `0.0.0.0.0.0` at different times because the
+        live UIA tree reshaped between presses. The new identity check
+        uses RuntimeId — so this MUST commit Zoom in, not info-dump
+        Zoom."""
+        inspector._last_committed = self._info(
+            "0.0.0.0.0.0", "Zoom",
+            bbox=(-1803, 221, -1581, 249), runtime_id=(1, 100),
+        )
+        zoom_in = self._info(
+            "0.0.0.0.0.0", "Zoom in",
+            bbox=(-1576, 224, -1354, 253), runtime_id=(1, 200),
+        )
+        with mock.patch.object(
+            inspector, "_gather_element_info", return_value=zoom_in,
+        ), mock.patch.object(inspector, "_emit_full") as mef, \
+             mock.patch.object(inspector, "_commit") as mc:
+            inspector._handle_press(0, 0)
+        mef.assert_not_called()
+        mc.assert_called_once_with(zoom_in)
 
     def test_gather_returning_none_is_silent(self):
         # If UIA returned nothing (or scope filtered the press out),

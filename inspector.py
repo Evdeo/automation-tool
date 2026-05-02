@@ -204,9 +204,12 @@ def _top_window(ctrl):
         cur = parent
 
 
-def _path_to_chain(win, x, y):
+def _path_to_chain(win, x, y, walked=None):
     """Find the deepest UIA element under (x, y) inside `win` and build
     its index chain back up to the window.
+
+    `walked` may be passed in by callers that already walked the tree
+    (`_gather_unsafe`) so we don't pay for two walks per press.
 
     The previous implementation descended one level at a time picking
     the smallest immediate child whose `BoundingRectangle` contains
@@ -222,7 +225,8 @@ def _path_to_chain(win, x, y):
     reconstructed from the leaf's struct_id by walking each ancestor
     prefix back up the walked list.
     """
-    walked = tree.walk_live(win)
+    if walked is None:
+        walked = tree.walk_live(win)
     candidates = []
     for n in walked:
         bb = n.get("bbox") or [0, 0, 0, 0]
@@ -268,6 +272,20 @@ def _path_to_chain(win, x, y):
     name_path = "/".join(tree._segment(c, i) for c, i in chain)
     struct_id = ".".join(str(i) for _, i in chain)
     return chain[-1][0], chain, name_path, struct_id
+
+
+def _runtime_id(ctrl):
+    """UIA RuntimeId of `ctrl` as a tuple, or () on failure. RuntimeId
+    is the UIA-level stable identifier for a live element — used by
+    `_is_same_or_descendant` to ask 'is this the same element again'
+    after a tree reshape. struct_id can't answer that question because
+    it's a positional path, not an identity (a submenu opening can
+    leave two different elements sharing the same struct_id at
+    different times)."""
+    try:
+        return tuple(ctrl.GetRuntimeId() or ())
+    except Exception:
+        return ()
 
 
 def _find_interactable_ancestor(chain):
@@ -552,7 +570,12 @@ def _gather_unsafe(x, y):
     if kind in ("app", "popup") and _windows[window_name]["fingerprint"] is None:
         _capture_fingerprint(win, window_name)
 
-    leaf, chain, name_path, struct_id = _path_to_chain(win, x, y)
+    # Walk the tree once and reuse the result for `_path_to_chain` so
+    # we don't pay for two walks per press. (The earlier refresh-cache
+    # approach has been retired in favour of using RuntimeId directly
+    # in `_is_same_or_descendant` — see `_runtime_id` docstring.)
+    walked = tree.walk_live(win)
+    leaf, chain, name_path, struct_id = _path_to_chain(win, x, y, walked=walked)
 
     bbox = None
     bbox_center = (None, None)
@@ -582,6 +605,7 @@ def _gather_unsafe(x, y):
         "bbox_center": bbox_center,
         "color": color,
         "window_name": window_name,
+        "runtime_id": _runtime_id(leaf),
         "interactable_ancestor": _find_interactable_ancestor(chain),
     }
 
@@ -645,10 +669,36 @@ def _emit_full(commit):
 # --- Commit / finalize ------------------------------------------------------
 
 
-def _is_descendant_or_same(struct_id, last_struct_id):
-    if struct_id == last_struct_id:
+def _is_same_or_descendant(info, last):
+    """True if `info`'s element is the same on-screen control as
+    `last`'s, or rendered geometrically inside `last`'s bounding rect.
+
+    Replaces the old `_is_descendant_or_same(struct_id, last_struct_id)`
+    which compared positional struct_ids. struct_id is a path index,
+    not an element identity — a submenu opening between presses can
+    leave two different elements (e.g. View>Zoom and Zoom>Zoom in)
+    sharing the same struct_id at different times, which made the old
+    check fire spurious info-dumps for genuine new presses.
+
+    UIA's `RuntimeId` is stable per-element-lifetime — that's the
+    canonical 'same element' test. Bbox containment handles the
+    descendant case geometrically (also robust to tree reshape; a
+    child element's screen rect is by definition inside its parent's).
+    """
+    if info.get("window_name") != last.get("window_name"):
+        return False
+    rid_a = info.get("runtime_id")
+    rid_b = last.get("runtime_id")
+    if rid_a and rid_b and rid_a == rid_b:
         return True
-    return struct_id.startswith(last_struct_id + ".")
+    nb = info.get("bbox")
+    lb = last.get("bbox")
+    if nb and lb:
+        nl, nt, nr, nbo = nb
+        ll, lt, lr, lbo = lb
+        if ll <= nl and nr <= lr and lt <= nt and nbo <= lbo:
+            return True
+    return False
 
 
 def _commit(info):
@@ -777,9 +827,9 @@ def _handle_press(x, y):
     if info is None:
         return
 
-    if _last_committed is not None and _is_descendant_or_same(
-        info["struct_id"], _last_committed["struct_id"]
-    ) and info.get("window_name") == _last_committed.get("window_name"):
+    if _last_committed is not None and _is_same_or_descendant(
+        info, _last_committed
+    ):
         _emit_full(_last_committed)
         return
 
