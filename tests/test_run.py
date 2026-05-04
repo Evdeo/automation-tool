@@ -70,19 +70,39 @@ class TestStateCalc(_WindowFixture):
         data = SimpleNamespace()
         with mock.patch.object(run, "wait_visible", return_value=True), \
              mock.patch.object(run, "click_when_enabled"), \
-             mock.patch.object(run, "click"), \
-             mock.patch.object(run, "each") as meach, \
+             mock.patch.object(run, "click") as mclick, \
+             mock.patch.object(run, "each",
+                               return_value=[True] * 10) as meach, \
              mock.patch.object(run, "hotkey") as mhk, \
              mock.patch.object(run, "read_clipboard", return_value="79"), \
              mock.patch.object(run, "log") as mlog:
             nxt, _ = run.state_calc(data)
-        # Two each() calls — digits("47") and digits("32").
-        self.assertEqual(meach.call_count, 2)
+        # `each` runs once as the atomic keypad-health check.
+        meach.assert_called_once()
+        self.assertIs(meach.call_args[0][0], run.is_enabled)
+        # 4 + 7 + plus + 3 + 2 + equals = 6 individual click() calls.
+        self.assertEqual(mclick.call_count, 6)
         mhk.assert_called_once_with(window.calc, "ctrl", "c")
         mlog.assert_called_once_with("results", "calc_result", "79")
         self.mock_open.assert_called_once_with("calc")
         self.mock_close.assert_called_once_with("calc")
         self.assertIsNone(nxt)
+
+    def test_aborts_when_keypad_unhealthy(self):
+        data = SimpleNamespace()
+        # Keypad-health each() reports a missing button — bail before
+        # typing anything to avoid a wrong result.
+        with mock.patch.object(run, "wait_visible", return_value=True), \
+             mock.patch.object(run, "each",
+                               return_value=[True] * 9 + [False]), \
+             mock.patch.object(run, "click") as mclick, \
+             mock.patch.object(run, "log") as mlog:
+            nxt, _ = run.state_calc(data)
+        self.assertIsNone(nxt)
+        mclick.assert_not_called()
+        mlog.assert_called_once()
+        self.assertEqual(mlog.call_args[0][:2],
+                         ("results", "calc_keypad_unhealthy"))
 
     def test_aborts_when_calc_unresponsive(self):
         data = SimpleNamespace()
