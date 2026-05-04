@@ -617,29 +617,59 @@ class TestReadInfo(unittest.TestCase):
         self.assertEqual(info["value"], "")
 
 
-# --- match() re-export ------------------------------------------------------
+# --- window.open/popup wiring ----------------------------------------------
 
 
-class TestMatchReExport(unittest.TestCase):
-    """`verbs.match` is a thin pass-through to `core.app.match`. The
-    real fingerprint logic lives in test_app.py — here we just verify
-    the wiring + default args."""
+class TestWindowOpen(unittest.TestCase):
+    """`window.open` is the find-or-launch entry point — it looks up the
+    name in the registry and delegates to `core.app.match`. Real
+    fingerprint logic lives in test_app.py."""
+
+    def setUp(self):
+        from core import window
+        window._reset()
+
+    def tearDown(self):
+        from core import window
+        window._reset()
 
     def test_delegates_to_core_app_match(self):
-        sentinel = object()
+        from core import window
+        sentinel = mock.MagicMock()
+        sentinel.NativeWindowHandle = 123
+        window.register("notepad", "notepad.exe")
         with mock.patch("core.app.match", return_value=sentinel) as mm:
-            result = verbs.match("notepad", launch="notepad.exe")
+            result = window.open("notepad")
         self.assertIs(result, sentinel)
         mm.assert_called_once_with("notepad", launch="notepad.exe",
-                                   timeout=15.0, restrict_pid=None,
-                                   parent=None)
+                                   timeout=45.0)
+        # Cached on the namespace.
+        self.assertIs(window.notepad, sentinel)
 
-    def test_passes_custom_kwargs(self):
-        with mock.patch("core.app.match", return_value=None) as mm:
-            verbs.match("dlg", launch="popup", timeout=5.0,
-                        restrict_pid=42, parent="parentctrl")
-        mm.assert_called_once_with("dlg", launch="popup", timeout=5.0,
-                                   restrict_pid=42, parent="parentctrl")
+    def test_unregistered_name_raises(self):
+        from core import window
+        with self.assertRaises(KeyError):
+            window.open("not_registered")
+
+    def test_timeout_when_match_returns_none(self):
+        from core import window
+        window.register("foo", "foo.exe")
+        with mock.patch("core.app.match", return_value=None):
+            with self.assertRaises(TimeoutError):
+                window.open("foo")
+
+
+class TestWindowPopup(unittest.TestCase):
+    """`window.popup` delegates to `core.app.match` with launch='popup'."""
+
+    def test_delegates_to_core_app_match(self):
+        from core import window
+        sentinel = object()
+        with mock.patch("core.app.match", return_value=sentinel) as mm:
+            result = window.popup("dlg", restrict_pid=42, parent="p")
+        self.assertIs(result, sentinel)
+        mm.assert_called_once_with("dlg", launch="popup",
+                                   restrict_pid=42, parent="p")
 
 
 # --- Synchronous popup dismiss ----------------------------------------------

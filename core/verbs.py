@@ -1,11 +1,13 @@
 """Top-level verbs — the entire user-facing surface.
 
 Every action is a function taking the window as its first arg:
-`click(window, id)`, `fill(window, id, text)`, `match(name, launch=...)`.
+`click(window, id)`, `fill(window, id, text)`. App lifecycle lives on
+`core.window` — `window.open(name)`, `window.close(name)`,
+`window.get(name)`, `window.popup(name)`.
 
 Synchronous popup dismiss runs before every action verb. The
 "expected" set seeds from runner-start snapshot and grows with every
-`match()` return — see `_dismiss_unexpected_popups`.
+`window.open` / `window.popup` return — see `_dismiss_unexpected_popups`.
 """
 import csv as _csv
 import ctypes as _ctypes
@@ -292,13 +294,13 @@ def _dismiss_unexpected_popups(window=None):
 class no_dismiss:
     """Context manager: suppress popup dismiss inside the block. Use
     when a sequence intentionally creates / interacts with a popup
-    before `match()` has had a chance to register it.
+    before `window.popup()` has had a chance to register it.
 
         with no_dismiss():
-            hotkey(window, "ctrl", "s")
+            hotkey(window.notepad, "ctrl", "s")
             # Save dialog appears here; without no_dismiss it'd be
-            # killed before the next match() can register it.
-        dlg = match("save_dialog", launch="popup")
+            # killed before window.popup() can register it.
+            dlg = window.popup("save_dialog")
     """
 
     def __enter__(self):
@@ -615,25 +617,6 @@ def each(verb, window: Control, ids, **kwargs) -> list:
         finally:
             _dismiss_paused.depth -= 1
     return results
-
-
-# --- Popups / window matching -----------------------------------------------
-
-
-def match(name: str, launch: str, timeout: float = 15.0,
-          restrict_pid=None, parent=None):
-    """Locate a window by saved fingerprint. `launch` required.
-
-    `launch="<exe>"`: find an open window matching the saved
-    fingerprint; if none, run the exe and wait for one to appear.
-    `launch="popup"`: return a top-level HWND that appeared since
-    the last verb call and matches the fingerprint.
-
-    Returns `Control | None` — never raises.
-    """
-    from core import app as app_mod
-    return app_mod.match(name, launch=launch, timeout=timeout,
-                         restrict_pid=restrict_pid, parent=parent)
 
 
 # --- Orchestrations ---------------------------------------------------------

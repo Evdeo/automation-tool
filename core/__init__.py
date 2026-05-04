@@ -39,8 +39,7 @@ from core.verbs import (
     wait_gone,
     # reads
     read_info,
-    # window matching (replaces popup, save_as, dismiss_popups)
-    match,
+    # popup-dismiss control (window lifecycle lives on core.window)
     no_dismiss,
     # orchestrations
     screenshot,
@@ -63,7 +62,7 @@ __all__ = [
     "is_visible", "is_enabled", "is_color", "check_color",
     "wait_visible", "wait_enabled", "wait_gone",
     "read_info",
-    "match", "no_dismiss",
+    "no_dismiss",
     "screenshot", "close",
     "each",
     "now", "wait", "log", "read_clipboard", "log_csv",

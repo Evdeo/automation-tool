@@ -6,12 +6,13 @@
     window.open("notepad")   # launch (or re-bind to) the registered app
     window.close("notepad")  # terminate the process, drop the handle
     window.get("calc")       # match an already-open window, no launch
+    window.popup("save_dlg") # match a popup that just appeared
 
 Names map to executable paths via `register(name, path)`. The runner
 calls `register` for every entry in the `apps={...}` dict at start, so
 user code only ever passes the name.
 
-Reserved attribute names: `open`, `close`, `get`, `register`,
+Reserved attribute names: `open`, `close`, `get`, `popup`, `register`,
 `registry`. Don't name an app one of these.
 """
 from typing import TYPE_CHECKING, Optional
@@ -94,6 +95,26 @@ def get(name: str, timeout: float = 0.0) -> Optional["auto.Control"]:
         if time.time() >= deadline:
             return None
         time.sleep(0.2)
+
+
+def popup(name: str, restrict_pid=None,
+          parent=None) -> Optional["auto.Control"]:
+    """Match a popup that appeared since the last action verb. Use
+    inside `no_dismiss()` so auto-dismiss doesn't kill the popup before
+    it's captured:
+
+        with no_dismiss():
+            hotkey(window.notepad, "ctrl", "s")
+            dlg = window.popup("save_dialog")
+            # ...drive the dialog via dlg...
+
+    Returns `Control | None` — `None` if no new top-level window
+    matches the saved fingerprint. Popups are ephemeral, so the result
+    is NOT cached on `window.<name>`; hold on to the return value.
+    """
+    from core import app as app_mod
+    return app_mod.match(name, launch="popup",
+                         restrict_pid=restrict_pid, parent=parent)
 
 
 def close(name: str) -> None:

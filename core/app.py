@@ -1,14 +1,14 @@
-"""Window-locator: `match(name, launch=...)` is the single user entry.
+"""Window-locator engine. User-facing API lives on `core.window` —
+`window.open/close/get/popup`. This module exposes the matching
+primitives those entry points call into:
 
-`launch="<exe>"` finds an open window matching the saved fingerprint;
-if none, runs the exe and waits for a new window to appear.
+  * `find(name)`         — match an already-open window by saved
+                           fingerprint. No launch.
+  * `match(name, launch)` — find or launch (`launch="<exe>"`); or
+                           match a top-level HWND that appeared since
+                           the last verb call (`launch="popup"`).
 
-`launch="popup"` looks for a top-level HWND that appeared since the
-last verb call (temporal detection) and scores it against the saved
-fingerprint.
-
-Returns `Control | None` — never raises, so `if match(...)` is the
-canonical error-handling pattern.
+Both return `Control | None` — never raise.
 """
 import ctypes
 import subprocess
