@@ -1,13 +1,10 @@
-"""Unit tests for the state functions in run.py.
+"""Smoke tests for the minimal run.py demo.
 
-Each state function takes `data` (scratch) and returns `(next_state,
-data)`. Live windows live on `core.window`; tests pre-populate
-`window._windows` with mocks so `window.notepad` resolves. The tests
-mock every verb (already covered by `tests/test_verbs.py`) and verify:
-
-  * the right verbs are called in the right order with the right args,
-  * the returned `next_state` matches the documented control flow,
-  * fail-soft branches log + degrade gracefully instead of raising.
+Each state takes `data` (scratch) and returns `(next_state, data)`.
+Live windows live on `core.window`; tests stub `window.open` and
+`window.close` so the state functions don't try to spawn real
+processes, and pre-populate `window._windows` with mocks so
+`window.notepad` and `window.calc` resolve.
 """
 
 import sys
@@ -22,309 +19,94 @@ import run  # noqa: E402
 from core import window  # noqa: E402
 
 
-def _make_data():
-    """Empty scratch namespace — windows live on `core.window` now."""
-    return SimpleNamespace()
-
-
 class _WindowFixture(unittest.TestCase):
-    """Base: install a mock notepad handle in `window._windows` for the
-    duration of each test, then drop it on tearDown."""
+    """Stub `window.open`/`window.close` and pre-install mock handles
+    so state functions can run without launching anything."""
 
     def setUp(self):
         self.notepad = mock.MagicMock(name="notepad_window")
+        self.calc = mock.MagicMock(name="calc_window")
         window._windows["notepad"] = self.notepad
+        window._windows["calc"] = self.calc
+        self._patch_open = mock.patch.object(window, "open")
+        self._patch_close = mock.patch.object(window, "close")
+        self.mock_open = self._patch_open.start()
+        self.mock_close = self._patch_close.start()
 
     def tearDown(self):
+        self._patch_open.stop()
+        self._patch_close.stop()
         window._reset()
 
 
-class TestStateInit(_WindowFixture):
-    def test_routes_to_new_tab_when_file_menu_visible(self):
-        # Stale popups are auto-dismissed by every action verb's
-        # pre-call check — there's no explicit dismiss_popups call to
-        # mock here.
-        data = _make_data()
-        with mock.patch.object(run, "wait_visible", return_value=True) as mwv:
-            nxt, out = run.state_init(data)
-        mwv.assert_called_once_with(window.notepad, run.FILE_MENU, timeout=10)
-        self.assertEqual(nxt, "new_tab")
-        self.assertIs(out, data)
-
-    def test_stops_when_file_menu_never_visible(self):
-        # If wait_visible returns False, the state machine should end —
-        # not crash.
-        data = _make_data()
-        with mock.patch.object(run, "wait_visible", return_value=False), \
-             mock.patch.object(run, "log") as ml:
-            nxt, _ = run.state_init(data)
-        self.assertIsNone(nxt)
-        ml.assert_called_once()
-        # The log row tags the failure for later debugging.
-        self.assertEqual(ml.call_args[0][:2], ("results", "init_failed"))
-
-
-class TestStateNewTab(_WindowFixture):
-    def test_happy_path_opens_menu_and_clicks_new_tab(self):
-        data = _make_data()
-        with mock.patch.object(run, "click_when_enabled") as mce, \
-             mock.patch.object(run, "click") as mc, \
-             mock.patch.object(run, "wait_visible", return_value=True) as mwv, \
-             mock.patch.object(run, "wait_gone") as mwg:
-            nxt, _ = run.state_new_tab(data)
-        mce.assert_called_once_with(window.notepad, run.FILE_MENU)
-        mwv.assert_called_once_with(window.notepad, run.NEW_TAB, timeout=5)
-        mc.assert_called_once_with(window.notepad, run.NEW_TAB)
-        mwg.assert_called_once_with(window.notepad, run.NEW_TAB, timeout=3)
-        self.assertEqual(nxt, "zoom_in")
-
-    def test_logs_and_routes_to_close_when_new_tab_invisible(self):
-        # If the New tab menu item never appears, log the failure and
-        # short-circuit to the close state — don't try to click a ghost.
-        data = _make_data()
-        with mock.patch.object(run, "click_when_enabled"), \
-             mock.patch.object(run, "click") as mc, \
-             mock.patch.object(run, "wait_visible", return_value=False), \
-             mock.patch.object(run, "log") as ml:
-            nxt, _ = run.state_new_tab(data)
-        self.assertEqual(nxt, "close")
-        mc.assert_not_called()
-        ml.assert_called_once()
-        self.assertEqual(ml.call_args[0][:2], ("results", "new_tab_failed"))
-
-
-class TestStateZoomIn(_WindowFixture):
-    def test_walks_view_menu_chain(self):
-        # Chain: View > Zoom > Zoom In. Every step waits for the next
-        # item to render before clicking.
-        data = _make_data()
-        with mock.patch.object(run, "click_when_enabled") as mce, \
-             mock.patch.object(run, "click") as mc, \
-             mock.patch.object(run, "wait_visible", return_value=True):
-            nxt, _ = run.state_zoom_in(data)
-        # Two click_when_enabled calls (VIEW_MENU and ZOOM), one final
-        # plain click (ZOOM_IN — already enabled by the time we reach it).
-        self.assertEqual(mce.call_count, 2)
-        mce.assert_any_call(window.notepad, run.VIEW_MENU)
-        mce.assert_any_call(window.notepad, run.ZOOM)
-        mc.assert_called_once_with(window.notepad, run.ZOOM_IN)
-        self.assertEqual(nxt, "zoom_out")
-
-
-class TestStateZoomOut(_WindowFixture):
-    def test_routes_to_type_time(self):
-        data = _make_data()
-        with mock.patch.object(run, "click_when_enabled"), \
-             mock.patch.object(run, "click") as mc, \
-             mock.patch.object(run, "wait_visible", return_value=True):
-            nxt, _ = run.state_zoom_out(data)
-        mc.assert_called_once_with(window.notepad, run.ZOOM_OUT)
-        self.assertEqual(nxt, "type_time")
-
-
-class TestStateTypeTime(_WindowFixture):
-    def test_fill_called_with_now_string(self):
-        data = _make_data()
-        with mock.patch.object(run, "fill") as mfill, \
-             mock.patch.object(run, "now",
-                               return_value="2026-01-01 12:00:00") as mn:
-            nxt, _ = run.state_type_time(data)
+class TestStateNotepad(_WindowFixture):
+    def test_writes_timestamp_then_closes(self):
+        data = SimpleNamespace()
+        with mock.patch.object(run, "wait_visible", return_value=True), \
+             mock.patch.object(run, "fill") as mfill, \
+             mock.patch.object(run, "now", return_value="2026-01-01"):
+            nxt, _ = run.state_notepad(data)
+        self.mock_open.assert_called_once_with("notepad")
         mfill.assert_called_once_with(window.notepad, run.EDITOR,
-                                      "2026-01-01 12:00:00")
-        mn.assert_called_once()
-        self.assertEqual(nxt, "extra")
+                                      "timestamp: 2026-01-01\n")
+        self.mock_close.assert_called_once_with("notepad")
+        self.assertEqual(nxt, "calc")
 
-
-class TestStateExtra(_WindowFixture):
-    """state_extra exercises the click family + clipboard verbs that
-    the main narrative doesn't naturally hit (double_click, right_click,
-    click_after, read_clipboard, key)."""
-
-    def test_full_pipeline(self):
-        data = _make_data()
-        with mock.patch.object(run, "double_click") as mdc, \
-             mock.patch.object(run, "right_click") as mrc, \
-             mock.patch.object(run, "click_after") as mca, \
-             mock.patch.object(run, "hotkey") as mhk, \
-             mock.patch.object(run, "key") as mkey, \
-             mock.patch.object(run, "read_clipboard",
-                               return_value="word"), \
-             mock.patch.object(run, "wait"), \
+    def test_aborts_when_notepad_unresponsive(self):
+        data = SimpleNamespace()
+        with mock.patch.object(run, "wait_visible", return_value=False), \
+             mock.patch.object(run, "fill") as mfill, \
              mock.patch.object(run, "log") as mlog:
-            nxt, _ = run.state_extra(data)
-        mdc.assert_called_once_with(window.notepad, run.EDITOR)
-        mrc.assert_called_once_with(window.notepad, run.EDITOR)
-        # hotkey for Ctrl+C, key for Escape (focus-targeted dismiss).
-        mhk.assert_called_once_with(window.notepad, "ctrl", "c")
-        mkey.assert_called_once_with("escape")
-        # click_after with the documented short pacing delay.
-        mca.assert_called_once_with(window.notepad, run.EDITOR, delay=0.1)
-        # read_clipboard result logged.
-        mlog.assert_any_call("results", "selected_word", "word")
-        self.assertEqual(nxt, "verify")
+            nxt, _ = run.state_notepad(data)
+        self.assertIsNone(nxt)
+        mfill.assert_not_called()
+        mlog.assert_called_once()
+        self.assertEqual(mlog.call_args[0][:2],
+                         ("results", "notepad_init_failed"))
 
 
-class TestStateVerify(_WindowFixture):
-    def test_logs_csv_with_visibility_and_color(self):
-        data = _make_data()
-        info_dict = {
-            "class_name": "EditControl", "name": "Editor",
-            "value": "", "role": "EditControl", "enabled": True,
-            "visible": True, "bbox": (0, 0, 100, 100),
-            "bbox_center": (50, 50), "automation_id": "edit",
-            "struct_id": run.EDITOR,
-        }
-        with mock.patch.object(run, "wait_enabled", return_value=True), \
-             mock.patch.object(run, "each",
-                               side_effect=[[True, True, True],
-                                            [True, True, True]]), \
-             mock.patch.object(run, "read_info",
-                               return_value=info_dict), \
-             mock.patch.object(run, "check_color",
-                               return_value=(255, 100, 50)), \
-             mock.patch.object(run, "is_color", return_value=True), \
-             mock.patch.object(run, "log_csv") as mlc, \
-             mock.patch.object(run, "log") as ml:
-            nxt, _ = run.state_verify(data)
-        mlc.assert_called_once()
-        # Header is 11 columns: ts + five kind/value pairs.
-        self.assertEqual(len(mlc.call_args.kwargs["header"]), 11)
-        # No warning logged when everything is visible+enabled.
-        ml.assert_not_called()
-        self.assertEqual(nxt, "snapshot")
-
-    def test_warns_when_control_invisible_or_disabled(self):
-        data = _make_data()
-        with mock.patch.object(run, "wait_enabled", return_value=True), \
-             mock.patch.object(run, "each",
-                               side_effect=[[True, False, True],
-                                            [True, True, True]]), \
-             mock.patch.object(run, "read_info",
-                               return_value={"class_name": "X"}), \
-             mock.patch.object(run, "check_color",
-                               return_value=(0, 0, 0)), \
-             mock.patch.object(run, "is_color", return_value=False), \
-             mock.patch.object(run, "log_csv"), \
-             mock.patch.object(run, "log") as ml:
-            nxt, _ = run.state_verify(data)
-        ml.assert_called_once()
-        self.assertEqual(ml.call_args[0][:2],
-                         ("results", "verify_warning"))
-        self.assertEqual(nxt, "snapshot")  # still proceeds — fail-soft
-
-
-class TestStateSnapshot(_WindowFixture):
-    def test_calls_screenshot_and_logs_path(self):
-        data = _make_data()
-        with mock.patch.object(run, "screenshot") as mss, \
-             mock.patch.object(run, "log") as ml:
-            nxt, _ = run.state_snapshot(data)
-        mss.assert_called_once()
-        # Path argument is data.RESULTS_DIR / before_save.png.
-        path_arg = mss.call_args[0][1]
-        self.assertEqual(path_arg.name, "before_save.png")
-        ml.assert_called_once()
-        self.assertEqual(ml.call_args[0][:2], ("results", "screenshot"))
-        self.assertEqual(nxt, "save")
-
-
-class TestStateSave(_WindowFixture):
-    def test_save_sequence_runs_under_no_dismiss(self):
-        """state_save uses Ctrl+S (via `hotkey`) → type(path) →
-        `key("enter")` (focus-targeted, NOT `hotkey(notepad, "enter")`
-        which would steal focus from the Save dialog). The whole
-        sequence runs inside `no_dismiss()` so the Save dialog isn't
-        auto-killed."""
-        from core import verbs
-        data = _make_data()
-        events = []  # (name, args, dismiss_depth)
-
-        def _record(name):
-            return lambda *a, **k: events.append(
-                (name, a, getattr(verbs._dismiss_paused, "depth", 0))
-            )
-
-        with mock.patch.object(run, "hotkey", side_effect=_record("hk")), \
-             mock.patch.object(run, "type", side_effect=_record("type")), \
-             mock.patch.object(run, "key", side_effect=_record("key")), \
-             mock.patch.object(run, "wait"), \
-             mock.patch.object(run, "log") as ml:
-            nxt, _ = run.state_save(data)
-        # Sequence: hotkey(Ctrl+Shift+S), type(path), key("enter")
-        self.assertEqual([n for n, _, _ in events], ["hk", "type", "key"])
-        self.assertEqual(events[0][1][1:], ("ctrl", "shift", "s"))
-        # `key("enter")` — single positional arg, no window.
-        self.assertEqual(events[2][1], ("enter",))
-        # type() received the resolved SAVE_PATH as a string.
-        import config as _cfg
-        self.assertEqual(events[1][1][0], str(_cfg.SAVE_PATH))
-        # All three calls observed dismiss-pause depth >= 1.
-        for name, _, depth in events:
-            self.assertGreaterEqual(
-                depth, 1,
-                f"{name} ran with dismiss depth={depth}; expected >=1",
-            )
-        ml.assert_called_once()
-        self.assertEqual(ml.call_args[0][:2], ("results", "saved"))
-        self.assertEqual(nxt, "close")
-
-
-class TestStateClose(_WindowFixture):
-    def test_clicks_close_tab_then_terminates_process(self):
-        data = _make_data()
-        with mock.patch.object(run, "is_visible", return_value=True), \
-             mock.patch.object(run, "click") as mc, \
-             mock.patch.object(run, "wait_visible", return_value=True), \
-             mock.patch.object(run, "wait"), \
-             mock.patch.object(run, "close") as mclose:
-            nxt, _ = run.state_close(data)
-        # Two clicks: FILE_MENU then CLOSE_TAB.
-        self.assertEqual(mc.call_count, 2)
-        mc.assert_any_call(window.notepad, run.FILE_MENU)
-        mc.assert_any_call(window.notepad, run.CLOSE_TAB)
-        # Final teardown: kill the Notepad process.
-        mclose.assert_called_once_with(window.notepad)
+class TestStateCalc(_WindowFixture):
+    def test_full_compute_pipeline(self):
+        data = SimpleNamespace()
+        with mock.patch.object(run, "wait_visible", return_value=True), \
+             mock.patch.object(run, "click_when_enabled"), \
+             mock.patch.object(run, "click"), \
+             mock.patch.object(run, "each") as meach, \
+             mock.patch.object(run, "hotkey") as mhk, \
+             mock.patch.object(run, "read_clipboard", return_value="79"), \
+             mock.patch.object(run, "log") as mlog:
+            nxt, _ = run.state_calc(data)
+        # Two each() calls — digits("47") and digits("32").
+        self.assertEqual(meach.call_count, 2)
+        mhk.assert_called_once_with(window.calc, "ctrl", "c")
+        mlog.assert_called_once_with("results", "calc_result", "79")
+        self.mock_open.assert_called_once_with("calc")
+        self.mock_close.assert_called_once_with("calc")
         self.assertIsNone(nxt)
 
-    def test_skips_when_menu_invisible(self):
-        # Defensive branch: if FILE_MENU isn't there, skip the menu
-        # drive but still terminate the process — leaves no orphans.
-        data = _make_data()
-        with mock.patch.object(run, "is_visible", return_value=False), \
-             mock.patch.object(run, "click") as mc, \
-             mock.patch.object(run, "close") as mclose, \
-             mock.patch.object(run, "log") as ml:
-            nxt, _ = run.state_close(data)
-        mc.assert_not_called()
-        mclose.assert_called_once_with(window.notepad)
+    def test_aborts_when_calc_unresponsive(self):
+        data = SimpleNamespace()
+        with mock.patch.object(run, "wait_visible", return_value=False), \
+             mock.patch.object(run, "log") as mlog:
+            nxt, _ = run.state_calc(data)
         self.assertIsNone(nxt)
-        ml.assert_called_once()
-        self.assertEqual(ml.call_args[0][:2],
-                         ("results", "close_skipped"))
+        mlog.assert_called_once()
+        self.assertEqual(mlog.call_args[0][:2],
+                         ("results", "calc_init_failed"))
 
 
-class TestStateMachineWiring(unittest.TestCase):
-    """Top-level checks on the STATES dict — every state function in the
-    module is registered, and the start_state in __main__ is one of them."""
-
-    def test_all_states_registered(self):
-        expected = {"init", "new_tab", "zoom_in", "zoom_out",
-                    "type_time", "extra", "verify", "snapshot",
-                    "save", "close"}
-        self.assertEqual(set(run.STATES), expected)
-
-    def test_every_registered_state_is_callable(self):
-        for name, fn in run.STATES.items():
-            self.assertTrue(callable(fn), f"{name} must be callable")
+class TestWiring(unittest.TestCase):
+    def test_states_registered(self):
+        self.assertEqual(set(run.STATES), {"notepad", "calc"})
 
     def test_apps_dict_well_formed(self):
-        self.assertIsInstance(run.APPS, dict)
-        self.assertGreaterEqual(len(run.APPS), 1)
-        for k, v in run.APPS.items():
-            self.assertIsInstance(k, str)
-            self.assertIsInstance(v, str)
-            self.assertTrue(v.endswith(".exe") or "/" in v or "\\" in v,
-                            f"APPS[{k!r}] should look like an exe path")
+        self.assertEqual(set(run.APPS), {"notepad", "calc"})
+        for path in run.APPS.values():
+            self.assertTrue(path.endswith(".exe"))
+
+    def test_calc_digit_map_complete(self):
+        self.assertEqual(set(run.CALC_DIGITS),
+                         set("0123456789"))
 
 
 if __name__ == "__main__":
