@@ -55,10 +55,20 @@ def run_once_with_watchdog(target, timeout_min=None, kill_on_timeout=None):
     return _supervise(target, timeout_min * 60, kill_on_timeout=kill_on_timeout)
 
 
-def run_with_watchdog(test_loop, kill_on_timeout=None):
+def run_with_watchdog(test_loop, error_loop=None, kill_on_timeout=None):
+    """Forever-loop the watchdog. After a clean exit the next iteration
+    runs `test_loop`; after a watchdog kill or non-zero exit it runs
+    `error_loop` (defaults to `test_loop`)."""
+    if error_loop is None:
+        error_loop = test_loop
     timeout_sec = config.LOOP_TIMEOUT_MIN * 60
+    target = test_loop
     while True:
-        _supervise(test_loop, timeout_sec, kill_on_timeout=kill_on_timeout)
+        outcome, exitcode = _supervise(target, timeout_sec,
+                                       kill_on_timeout=kill_on_timeout)
+        had_error = (outcome == "killed_timeout"
+                     or (exitcode is not None and exitcode != 0))
+        target = error_loop if had_error else test_loop
 
 
 def _run_states(states, start_state, data):
@@ -103,7 +113,7 @@ def _normalize_apps(apps, app_mod):
     return pairs
 
 
-def start(states, apps, start_state, prelaunch=True):
+def start(states, apps, start_state, error_state=None, prelaunch=True):
     """Entry point for user scripts.
 
     - Parses `--loop`.
@@ -121,12 +131,21 @@ def start(states, apps, start_state, prelaunch=True):
       run. Entry/exit transitions are auto-logged with timing.
     - On `--loop`, respawns a fresh child process per iteration; the
       watchdog kills any iteration that exceeds `LOOP_TIMEOUT_MIN`.
-      `kill_on_timeout` is auto-derived from `apps` so a hung GUI
-      won't pollute the next iteration.
+      After a kill or crash the next iteration starts at `error_state`
+      (defaults to `start_state`) — point it at a recovery state if
+      you want a different entry on failure. `kill_on_timeout` is
+      auto-derived from `apps` so a hung GUI won't pollute next iter.
     """
+    if error_state is None:
+        error_state = start_state
     if start_state not in states:
         raise ValueError(
             f"start_state={start_state!r} not in STATES; "
+            f"valid: {list(states)}"
+        )
+    if error_state not in states:
+        raise ValueError(
+            f"error_state={error_state!r} not in STATES; "
             f"valid: {list(states)}"
         )
 
@@ -150,13 +169,16 @@ def start(states, apps, start_state, prelaunch=True):
     # plus picklable args (states is a dict of module-level functions;
     # pairs is a list of (str, frozen Spec)). A nested closure here
     # would fail to pickle on Windows under spawn-based multiprocessing.
-    target = functools.partial(_driver_entry, states, start_state, pairs,
-                               prelaunch)
+    normal_target = functools.partial(_driver_entry, states, start_state,
+                                      pairs, prelaunch)
+    error_target = functools.partial(_driver_entry, states, error_state,
+                                     pairs, prelaunch)
 
     if args.loop:
-        run_with_watchdog(target, kill_on_timeout=kill_names)
+        run_with_watchdog(normal_target, error_loop=error_target,
+                          kill_on_timeout=kill_names)
     else:
-        run_once_with_watchdog(target, kill_on_timeout=kill_names)
+        run_once_with_watchdog(normal_target, kill_on_timeout=kill_names)
 
 
 def _driver_entry(states, start_state, pairs, prelaunch):

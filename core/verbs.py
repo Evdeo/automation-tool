@@ -580,6 +580,50 @@ def each(verb, window: Control, ids, **kwargs) -> list:
     return [verb(window, ctrl_id, **kwargs) for ctrl_id in ids]
 
 
+def sequence(verb, window: Control, ids, *, attempts: int = 3,
+             **kwargs) -> list:
+    """Run `verb(window, id, **kwargs)` across `ids` in order, where
+    each step depends on the previous (e.g. menu navigation: File →
+    Save As → Confirm). If a popup appears between two steps, dismiss
+    it and restart from id 0 — because the popup likely collapsed the
+    menu, the remaining ids would no longer be reachable.
+
+    Up to `attempts` tries (default 3). Use `each` for independent
+    batched calls where partial progress is fine.
+    """
+    _capture_hwnd_baseline()
+    _dismiss_unexpected_popups(window)
+
+    last_idx = len(ids) - 1
+    results: list = []
+    for _ in range(attempts):
+        _dismiss_paused.depth = getattr(_dismiss_paused, "depth", 0) + 1
+        try:
+            results = []
+            interrupted = False
+            for i, ctrl_id in enumerate(ids):
+                results.append(verb(window, ctrl_id, **kwargs))
+                if i < last_idx:
+                    from core.app import _enumerate_top_level_hwnds
+                    current = set(_enumerate_top_level_hwnds())
+                    new_unexpected = {
+                        h for h in current - _hwnd_baseline_set - _expected_hwnds
+                        if _hwnd_pid(h) not in _trusted_pids
+                        and not _is_system_window(h)
+                    }
+                    if new_unexpected:
+                        for hwnd in new_unexpected:
+                            _dismiss_one(hwnd)
+                        _capture_hwnd_baseline()
+                        interrupted = True
+                        break
+            if not interrupted:
+                return results
+        finally:
+            _dismiss_paused.depth -= 1
+    return results
+
+
 # --- Orchestrations ---------------------------------------------------------
 
 

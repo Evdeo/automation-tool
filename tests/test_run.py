@@ -40,13 +40,18 @@ class _WindowFixture(unittest.TestCase):
 
 
 class TestStateNotepad(_WindowFixture):
-    def test_writes_timestamp_then_closes(self):
+    def test_drives_menu_sequence_then_writes_timestamp(self):
         data = SimpleNamespace()
         with mock.patch.object(run, "wait_visible", return_value=True), \
+             mock.patch.object(run, "sequence") as mseq, \
              mock.patch.object(run, "fill") as mfill, \
              mock.patch.object(run, "now", return_value="2026-01-01"):
             nxt, _ = run.state_notepad(data)
         self.mock_open.assert_called_once_with("notepad")
+        # File menu -> New tab as a dependent sequence.
+        mseq.assert_called_once_with(run.click_when_enabled,
+                                     window.notepad,
+                                     [run.FILE_MENU, run.NEW_TAB])
         mfill.assert_called_once_with(window.notepad, run.EDITOR,
                                       "timestamp: 2026-01-01\n")
         self.mock_close.assert_called_once_with("notepad")
@@ -55,10 +60,12 @@ class TestStateNotepad(_WindowFixture):
     def test_aborts_when_notepad_unresponsive(self):
         data = SimpleNamespace()
         with mock.patch.object(run, "wait_visible", return_value=False), \
+             mock.patch.object(run, "sequence") as mseq, \
              mock.patch.object(run, "fill") as mfill, \
              mock.patch.object(run, "log") as mlog:
             nxt, _ = run.state_notepad(data)
         self.assertIsNone(nxt)
+        mseq.assert_not_called()
         mfill.assert_not_called()
         mlog.assert_called_once()
         self.assertEqual(mlog.call_args[0][:2],

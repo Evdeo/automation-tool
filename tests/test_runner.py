@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -105,6 +106,78 @@ class TestRunOnceWithWatchdog(unittest.TestCase):
         rows = self._watchdog_rows()
         events = [r[2] for r in rows]
         self.assertEqual(events, ["started", "exited"])
+
+
+class TestRunWithWatchdogErrorRouting(unittest.TestCase):
+    """`run_with_watchdog` switches between `test_loop` and `error_loop`
+    based on each iteration's outcome. We mock `_supervise` to feed it
+    a scripted sequence of outcomes, then break the otherwise-infinite
+    loop when the script is exhausted."""
+
+    def _route(self, outcomes, error_loop="error"):
+        targets_seen = []
+        outcomes_iter = iter(outcomes)
+
+        def fake_supervise(target, *_a, **_kw):
+            targets_seen.append(target)
+            try:
+                return next(outcomes_iter)
+            except StopIteration:
+                raise _StopLoop()
+
+        with mock.patch.object(runner, "_supervise",
+                               side_effect=fake_supervise):
+            try:
+                runner.run_with_watchdog("normal", error_loop=error_loop)
+            except _StopLoop:
+                pass
+        return targets_seen
+
+    def test_clean_exit_keeps_normal_target(self):
+        # iter 1 = normal → clean → iter 2 = normal → clean → iter 3 starts normal.
+        targets = self._route([("exited", 0), ("exited", 0)])
+        self.assertEqual(targets, ["normal", "normal", "normal"])
+
+    def test_timeout_switches_to_error_target(self):
+        targets = self._route([
+            ("exited", 0),               # iter 1 clean
+            ("killed_timeout", None),    # iter 2 timeout → next is error
+            ("exited", 0),               # iter 3 clean → next is normal
+        ])
+        self.assertEqual(targets, ["normal", "normal", "error", "normal"])
+
+    def test_nonzero_exit_switches_to_error_target(self):
+        targets = self._route([("exited", 1)])
+        self.assertEqual(targets, ["normal", "error"])
+
+    def test_default_error_loop_falls_back_to_test_loop(self):
+        # error_loop=None → on failure, re-run test_loop ("normal").
+        targets = self._route(
+            [("killed_timeout", None), ("exited", 0)],
+            error_loop=None,
+        )
+        self.assertEqual(targets, ["normal", "normal", "normal"])
+
+
+class _StopLoop(Exception):
+    """Sentinel for breaking out of run_with_watchdog's `while True`."""
+
+
+class TestStartValidatesStates(unittest.TestCase):
+    """`start()` validates both `start_state` and `error_state` against
+    the STATES dict before doing any process work."""
+
+    def _states(self):
+        return {"a": lambda d: (None, d), "b": lambda d: (None, d)}
+
+    def test_unknown_start_state_raises(self):
+        with self.assertRaisesRegex(ValueError, "start_state="):
+            runner.start(self._states(), apps={}, start_state="missing")
+
+    def test_unknown_error_state_raises(self):
+        with self.assertRaisesRegex(ValueError, "error_state="):
+            runner.start(self._states(), apps={}, start_state="a",
+                         error_state="missing")
 
 
 if __name__ == "__main__":

@@ -245,6 +245,72 @@ class TestEach(unittest.TestCase):
         self.assertEqual(mip.call_count, 3)
 
 
+class TestSequence(unittest.TestCase):
+    """`sequence` snapshots the HWND set at entry; if a new unexpected
+    HWND appears between two ids (not after the last), it dismisses
+    the popup and restarts the loop from id 0. Up to `attempts` tries."""
+
+    def setUp(self):
+        self._saved_expected = set(verbs._expected_hwnds)
+        self._saved_trusted = set(verbs._trusted_pids)
+        verbs._expected_hwnds.clear()
+        verbs._trusted_pids.clear()
+
+    def tearDown(self):
+        verbs._expected_hwnds.clear()
+        verbs._expected_hwnds.update(self._saved_expected)
+        verbs._trusted_pids.clear()
+        verbs._trusted_pids.update(self._saved_trusted)
+
+    def test_no_popup_runs_through_once(self):
+        calls = []
+        with mock.patch("core.app._enumerate_top_level_hwnds",
+                        return_value=[1, 2]), \
+             mock.patch.object(verbs, "_dismiss_unexpected_popups"), \
+             mock.patch.object(verbs, "_dismiss_one") as mdo:
+            verbs.sequence(lambda w, i: calls.append(i), _FakeWindow(),
+                           ["A", "B", "C"])
+        self.assertEqual(calls, ["A", "B", "C"])
+        mdo.assert_not_called()
+
+    def test_popup_between_ids_triggers_restart(self):
+        # entry baseline=[1,2] → A → enum=[1,2,99] (popup!) → dismiss(99),
+        # restart → A → enum=[1,2] → B → done (last id, no post-check).
+        enum_returns = iter([
+            [1, 2],          # initial baseline
+            [1, 2, 99],      # post-A on attempt 1
+            [1, 2],          # baseline refresh after dismiss
+            [1, 2],          # post-A on attempt 2
+        ])
+        with mock.patch("core.app._enumerate_top_level_hwnds",
+                        side_effect=lambda: next(enum_returns)), \
+             mock.patch.object(verbs, "_dismiss_unexpected_popups"), \
+             mock.patch.object(verbs, "_dismiss_one") as mdo:
+            calls = []
+            verbs.sequence(lambda w, i: calls.append(i), _FakeWindow(),
+                           ["A", "B"])
+        self.assertEqual(calls, ["A", "A", "B"])
+        mdo.assert_called_once_with(99)
+
+    def test_attempts_kwarg_caps_retries(self):
+        # Persistent popup → exhaust attempts and return whatever we have.
+        enum_returns = iter([
+            [1, 2],          # initial baseline
+            [1, 2, 99],      # post-A attempt 1
+            [1, 2],          # refresh
+            [1, 2, 99],      # post-A attempt 2 (popup back again)
+        ])
+        with mock.patch("core.app._enumerate_top_level_hwnds",
+                        side_effect=lambda: next(enum_returns)), \
+             mock.patch.object(verbs, "_dismiss_unexpected_popups"), \
+             mock.patch.object(verbs, "_dismiss_one"):
+            calls = []
+            verbs.sequence(lambda w, i: calls.append(i), _FakeWindow(),
+                           ["A", "B"], attempts=2)
+        # Two attempts, both interrupted after A.
+        self.assertEqual(calls, ["A", "A"])
+
+
 # --- Click family wrappers --------------------------------------------------
 
 
