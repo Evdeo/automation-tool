@@ -885,8 +885,8 @@ class TestMultiAppMatchAndFingerprint(WindowsUITestBase):
                                "Calculator walk should have >5 nodes")
 
             # Step 3: Hop back to Notepad. Verbs must still resolve
-            # against self.win — the runner-style "data.notepad" pattern
-            # works because the window control object is stable.
+            # against self.win — the runner-style "window.notepad"
+            # pattern works because the window control object is stable.
             apps.bring_to_foreground(self.win)
             time.sleep(0.5)
             self.assertTrue(verbs.is_visible(self.win, "File:MenuItemControl"),

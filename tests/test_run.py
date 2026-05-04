@@ -1,8 +1,9 @@
 """Unit tests for the state functions in run.py.
 
-Each state function takes `data` and returns `(next_state, data)`. The
-tests mock every verb (already covered by `tests/test_verbs.py`) and
-verify:
+Each state function takes `data` (scratch) and returns `(next_state,
+data)`. Live windows live on `core.window`; tests pre-populate
+`window._windows` with mocks so `window.notepad` resolves. The tests
+mock every verb (already covered by `tests/test_verbs.py`) and verify:
 
   * the right verbs are called in the right order with the right args,
   * the returned `next_state` matches the documented control flow,
@@ -18,15 +19,27 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import run  # noqa: E402
+from core import window  # noqa: E402
 
 
 def _make_data():
-    """Stand-in for the runner-built `data` SimpleNamespace. The window
-    object itself is opaque — verbs are mocked so they never inspect it."""
-    return SimpleNamespace(notepad=mock.MagicMock(name="notepad_window"))
+    """Empty scratch namespace — windows live on `core.window` now."""
+    return SimpleNamespace()
 
 
-class TestStateInit(unittest.TestCase):
+class _WindowFixture(unittest.TestCase):
+    """Base: install a mock notepad handle in `window._windows` for the
+    duration of each test, then drop it on tearDown."""
+
+    def setUp(self):
+        self.notepad = mock.MagicMock(name="notepad_window")
+        window._windows["notepad"] = self.notepad
+
+    def tearDown(self):
+        window._reset()
+
+
+class TestStateInit(_WindowFixture):
     def test_routes_to_new_tab_when_file_menu_visible(self):
         # Stale popups are auto-dismissed by every action verb's
         # pre-call check — there's no explicit dismiss_popups call to
@@ -34,7 +47,7 @@ class TestStateInit(unittest.TestCase):
         data = _make_data()
         with mock.patch.object(run, "wait_visible", return_value=True) as mwv:
             nxt, out = run.state_init(data)
-        mwv.assert_called_once_with(data.notepad, run.FILE_MENU, timeout=10)
+        mwv.assert_called_once_with(window.notepad, run.FILE_MENU, timeout=10)
         self.assertEqual(nxt, "new_tab")
         self.assertIs(out, data)
 
@@ -51,7 +64,7 @@ class TestStateInit(unittest.TestCase):
         self.assertEqual(ml.call_args[0][:2], ("results", "init_failed"))
 
 
-class TestStateNewTab(unittest.TestCase):
+class TestStateNewTab(_WindowFixture):
     def test_happy_path_opens_menu_and_clicks_new_tab(self):
         data = _make_data()
         with mock.patch.object(run, "click_when_enabled") as mce, \
@@ -59,10 +72,10 @@ class TestStateNewTab(unittest.TestCase):
              mock.patch.object(run, "wait_visible", return_value=True) as mwv, \
              mock.patch.object(run, "wait_gone") as mwg:
             nxt, _ = run.state_new_tab(data)
-        mce.assert_called_once_with(data.notepad, run.FILE_MENU)
-        mwv.assert_called_once_with(data.notepad, run.NEW_TAB, timeout=5)
-        mc.assert_called_once_with(data.notepad, run.NEW_TAB)
-        mwg.assert_called_once_with(data.notepad, run.NEW_TAB, timeout=3)
+        mce.assert_called_once_with(window.notepad, run.FILE_MENU)
+        mwv.assert_called_once_with(window.notepad, run.NEW_TAB, timeout=5)
+        mc.assert_called_once_with(window.notepad, run.NEW_TAB)
+        mwg.assert_called_once_with(window.notepad, run.NEW_TAB, timeout=3)
         self.assertEqual(nxt, "zoom_in")
 
     def test_logs_and_routes_to_close_when_new_tab_invisible(self):
@@ -80,7 +93,7 @@ class TestStateNewTab(unittest.TestCase):
         self.assertEqual(ml.call_args[0][:2], ("results", "new_tab_failed"))
 
 
-class TestStateZoomIn(unittest.TestCase):
+class TestStateZoomIn(_WindowFixture):
     def test_walks_view_menu_chain(self):
         # Chain: View > Zoom > Zoom In. Every step waits for the next
         # item to render before clicking.
@@ -92,37 +105,37 @@ class TestStateZoomIn(unittest.TestCase):
         # Two click_when_enabled calls (VIEW_MENU and ZOOM), one final
         # plain click (ZOOM_IN — already enabled by the time we reach it).
         self.assertEqual(mce.call_count, 2)
-        mce.assert_any_call(data.notepad, run.VIEW_MENU)
-        mce.assert_any_call(data.notepad, run.ZOOM)
-        mc.assert_called_once_with(data.notepad, run.ZOOM_IN)
+        mce.assert_any_call(window.notepad, run.VIEW_MENU)
+        mce.assert_any_call(window.notepad, run.ZOOM)
+        mc.assert_called_once_with(window.notepad, run.ZOOM_IN)
         self.assertEqual(nxt, "zoom_out")
 
 
-class TestStateZoomOut(unittest.TestCase):
+class TestStateZoomOut(_WindowFixture):
     def test_routes_to_type_time(self):
         data = _make_data()
         with mock.patch.object(run, "click_when_enabled"), \
              mock.patch.object(run, "click") as mc, \
              mock.patch.object(run, "wait_visible", return_value=True):
             nxt, _ = run.state_zoom_out(data)
-        mc.assert_called_once_with(data.notepad, run.ZOOM_OUT)
+        mc.assert_called_once_with(window.notepad, run.ZOOM_OUT)
         self.assertEqual(nxt, "type_time")
 
 
-class TestStateTypeTime(unittest.TestCase):
+class TestStateTypeTime(_WindowFixture):
     def test_fill_called_with_now_string(self):
         data = _make_data()
         with mock.patch.object(run, "fill") as mfill, \
              mock.patch.object(run, "now",
                                return_value="2026-01-01 12:00:00") as mn:
             nxt, _ = run.state_type_time(data)
-        mfill.assert_called_once_with(data.notepad, run.EDITOR,
+        mfill.assert_called_once_with(window.notepad, run.EDITOR,
                                       "2026-01-01 12:00:00")
         mn.assert_called_once()
         self.assertEqual(nxt, "extra")
 
 
-class TestStateExtra(unittest.TestCase):
+class TestStateExtra(_WindowFixture):
     """state_extra exercises the click family + clipboard verbs that
     the main narrative doesn't naturally hit (double_click, right_click,
     click_after, read_clipboard, key)."""
@@ -139,19 +152,19 @@ class TestStateExtra(unittest.TestCase):
              mock.patch.object(run, "wait"), \
              mock.patch.object(run, "log") as mlog:
             nxt, _ = run.state_extra(data)
-        mdc.assert_called_once_with(data.notepad, run.EDITOR)
-        mrc.assert_called_once_with(data.notepad, run.EDITOR)
+        mdc.assert_called_once_with(window.notepad, run.EDITOR)
+        mrc.assert_called_once_with(window.notepad, run.EDITOR)
         # hotkey for Ctrl+C, key for Escape (focus-targeted dismiss).
-        mhk.assert_called_once_with(data.notepad, "ctrl", "c")
+        mhk.assert_called_once_with(window.notepad, "ctrl", "c")
         mkey.assert_called_once_with("escape")
         # click_after with the documented short pacing delay.
-        mca.assert_called_once_with(data.notepad, run.EDITOR, delay=0.1)
+        mca.assert_called_once_with(window.notepad, run.EDITOR, delay=0.1)
         # read_clipboard result logged.
         mlog.assert_any_call("results", "selected_word", "word")
         self.assertEqual(nxt, "verify")
 
 
-class TestStateVerify(unittest.TestCase):
+class TestStateVerify(_WindowFixture):
     def test_logs_csv_with_visibility_and_color(self):
         data = _make_data()
         info_dict = {
@@ -200,7 +213,7 @@ class TestStateVerify(unittest.TestCase):
         self.assertEqual(nxt, "snapshot")  # still proceeds — fail-soft
 
 
-class TestStateSnapshot(unittest.TestCase):
+class TestStateSnapshot(_WindowFixture):
     def test_calls_screenshot_and_logs_path(self):
         data = _make_data()
         with mock.patch.object(run, "screenshot") as mss, \
@@ -215,7 +228,7 @@ class TestStateSnapshot(unittest.TestCase):
         self.assertEqual(nxt, "save")
 
 
-class TestStateSave(unittest.TestCase):
+class TestStateSave(_WindowFixture):
     def test_save_sequence_runs_under_no_dismiss(self):
         """state_save uses Ctrl+S (via `hotkey`) → type(path) →
         `key("enter")` (focus-targeted, NOT `hotkey(notepad, "enter")`
@@ -256,7 +269,7 @@ class TestStateSave(unittest.TestCase):
         self.assertEqual(nxt, "close")
 
 
-class TestStateClose(unittest.TestCase):
+class TestStateClose(_WindowFixture):
     def test_clicks_close_tab_then_terminates_process(self):
         data = _make_data()
         with mock.patch.object(run, "is_visible", return_value=True), \
@@ -267,10 +280,10 @@ class TestStateClose(unittest.TestCase):
             nxt, _ = run.state_close(data)
         # Two clicks: FILE_MENU then CLOSE_TAB.
         self.assertEqual(mc.call_count, 2)
-        mc.assert_any_call(data.notepad, run.FILE_MENU)
-        mc.assert_any_call(data.notepad, run.CLOSE_TAB)
+        mc.assert_any_call(window.notepad, run.FILE_MENU)
+        mc.assert_any_call(window.notepad, run.CLOSE_TAB)
         # Final teardown: kill the Notepad process.
-        mclose.assert_called_once_with(data.notepad)
+        mclose.assert_called_once_with(window.notepad)
         self.assertIsNone(nxt)
 
     def test_skips_when_menu_invisible(self):
@@ -283,7 +296,7 @@ class TestStateClose(unittest.TestCase):
              mock.patch.object(run, "log") as ml:
             nxt, _ = run.state_close(data)
         mc.assert_not_called()
-        mclose.assert_called_once_with(data.notepad)
+        mclose.assert_called_once_with(window.notepad)
         self.assertIsNone(nxt)
         ml.assert_called_once()
         self.assertEqual(ml.call_args[0][:2],

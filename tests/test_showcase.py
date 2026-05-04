@@ -12,13 +12,25 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import showcase  # noqa: E402
+from core import window  # noqa: E402
 
 
 def _make_data():
-    return SimpleNamespace(
-        notepad=mock.MagicMock(name="notepad_window"),
-        calc=mock.MagicMock(name="calc_window"),
-    )
+    """Empty scratch namespace — windows live on `core.window` now."""
+    return SimpleNamespace()
+
+
+class _WindowFixture(unittest.TestCase):
+    """Base: install mock notepad + calc handles in `window._windows`."""
+
+    def setUp(self):
+        self.notepad = mock.MagicMock(name="notepad_window")
+        self.calc = mock.MagicMock(name="calc_window")
+        window._windows["notepad"] = self.notepad
+        window._windows["calc"] = self.calc
+
+    def tearDown(self):
+        window._reset()
 
 
 class TestStateMachineWiring(unittest.TestCase):
@@ -36,7 +48,7 @@ class TestStateMachineWiring(unittest.TestCase):
                          {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"})
 
 
-class TestStateInit(unittest.TestCase):
+class TestStateInit(_WindowFixture):
     def test_routes_to_audit_on_success(self):
         data = _make_data()
         with mock.patch.object(showcase, "wait_visible",
@@ -54,7 +66,7 @@ class TestStateInit(unittest.TestCase):
         self.assertIsNone(nxt)
 
 
-class TestStateAudit(unittest.TestCase):
+class TestStateAudit(_WindowFixture):
     def test_each_run_for_visibility_and_enabled(self):
         data = _make_data()
         with mock.patch.object(showcase, "each",
@@ -74,7 +86,7 @@ class TestStateAudit(unittest.TestCase):
         self.assertEqual(nxt, "compute")
 
 
-class TestStateCompute(unittest.TestCase):
+class TestStateCompute(_WindowFixture):
     def test_full_compute_pipeline(self):
         data = _make_data()
         with mock.patch.object(showcase, "click_when_enabled"), \
@@ -98,7 +110,7 @@ class TestStateCompute(unittest.TestCase):
         self.assertEqual(nxt, "swap_back")
 
 
-class TestStateClickFamilyDemo(unittest.TestCase):
+class TestStateClickFamilyDemo(_WindowFixture):
     def test_double_and_right_click_both_called(self):
         data = _make_data()
         with mock.patch.object(showcase, "double_click") as mdc, \
@@ -124,7 +136,7 @@ class TestStateClickFamilyDemo(unittest.TestCase):
         self.assertEqual(ml.call_args[0][:2], ("showcase", "click_family_warn"))
 
 
-class TestStateSave(unittest.TestCase):
+class TestStateSave(_WindowFixture):
     def test_save_via_hotkey_type_enter_inside_no_dismiss(self):
         """state_save wraps the Ctrl+S → type → Enter sequence in
         `no_dismiss()` so the auto-dismiss doesn't kill the Save dialog

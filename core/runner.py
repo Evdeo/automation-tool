@@ -64,12 +64,13 @@ def run_with_watchdog(test_loop, kill_on_timeout=None):
 def _run_states(states, start_state, data):
     """State-machine driver with automatic transition logging.
 
-    Each state function takes `data` and returns `(next_state, data)`
-    — a tuple so the data flow is explicit, not implicit by-reference.
-    Returning `(None, data)` ends the run. Entry and exit (with
-    duration) are auto-logged to the `states` table. Payload-bearing
-    logs (saved path, written value, etc.) still belong in the state
-    function via `core.log`.
+    Each state function takes `data` (scratch carried between states —
+    counters, intermediate values, results) and returns
+    `(next_state, data)`. Live windows are NOT in `data`; access them
+    via `from core import window` then `window.<name>`. Returning
+    `(None, data)` ends the run. Entry and exit (with duration) are
+    auto-logged to the `states` table. Payload-bearing logs still
+    belong in the state function via `core.log`.
     """
     state = start_state
     while state is not None:
@@ -102,18 +103,22 @@ def _normalize_apps(apps, app_mod):
     return pairs
 
 
-def start(states, apps, start_state):
+def start(states, apps, start_state, prelaunch=True):
     """Entry point for user scripts.
 
     - Parses `--loop`.
     - Verifies every launch path in `apps` is reachable.
-    - Pre-launches every app and exposes each one as `data.<name>` to
-      every state function (auto-name = lowercased exe stem; pass
-      `apps={"my_name": "path.exe", ...}` to override).
+    - Registers each app in `core.window` so state functions can call
+      `window.open(name)`, `window.close(name)`, `window.get(name)` —
+      and access live handles as `window.<name>`. Auto-name = lowercased
+      exe stem; pass `apps={"my_name": "path.exe", ...}` to override.
+    - With `prelaunch=True` (default), every registered app is opened
+      before the first state runs. Set `prelaunch=False` for apps that
+      can't coexist — open/close them yourself inside states.
     - Drives the state machine starting at `start_state`. Each state
-      function takes `data` and returns `(next_state, data)`. Returning
-      `(None, data)` ends the run. Entry/exit transitions are auto-
-      logged with timing.
+      function takes `data` (scratch carried between states) and
+      returns `(next_state, data)`. Returning `(None, data)` ends the
+      run. Entry/exit transitions are auto-logged with timing.
     - On `--loop`, respawns a fresh child process per iteration; the
       watchdog kills any iteration that exceeds `LOOP_TIMEOUT_MIN`.
       `kill_on_timeout` is auto-derived from `apps` so a hung GUI
@@ -145,7 +150,8 @@ def start(states, apps, start_state):
     # plus picklable args (states is a dict of module-level functions;
     # pairs is a list of (str, frozen Spec)). A nested closure here
     # would fail to pickle on Windows under spawn-based multiprocessing.
-    target = functools.partial(_driver_entry, states, start_state, pairs)
+    target = functools.partial(_driver_entry, states, start_state, pairs,
+                               prelaunch)
 
     if args.loop:
         run_with_watchdog(target, kill_on_timeout=kill_names)
@@ -153,28 +159,20 @@ def start(states, apps, start_state):
         run_once_with_watchdog(target, kill_on_timeout=kill_names)
 
 
-def _driver_entry(states, start_state, pairs):
-    """Runs in the watchdog's child process. Resolves every app to a live
-    window and drives the state machine.
+def _driver_entry(states, start_state, pairs, prelaunch):
+    """Runs in the watchdog's child process. Registers every app in
+    `core.window` and (by default) opens each one before the state
+    machine starts.
 
     Seeds the popup-dismiss "expected" set from the current top-level
     HWNDs (anything already open at runner start is treated as wanted).
-    Then `match(name, launch=path)` finds-or-launches each app and
-    registers the resulting HWND as expected.
     """
-    from core import app as app_mod
     from core import verbs as verbs_mod
+    from core import window
     verbs_mod._seed_expected_from_current()
-    data = SimpleNamespace()
     for name, path in pairs:
-        # 45s timeout — UWP apps (e.g. Calculator on Win11) take 20-30s
-        # for the actual window to render after Popen returns. Win32
-        # apps like Notepad come up in <2s and don't notice the slack.
-        win = app_mod.match(name, launch=path, timeout=45.0)
-        if win is None:
-            raise TimeoutError(
-                f"could not match or launch app {name!r} from {path!r}. "
-                f"Run `python inspector.py`, capture this app, and try again."
-            )
-        setattr(data, name, win)
-    _run_states(states, start_state, data)
+        window.register(name, path)
+    if prelaunch:
+        for name, _ in pairs:
+            window.open(name)
+    _run_states(states, start_state, SimpleNamespace())

@@ -115,6 +115,26 @@ def _score_candidates(expected_fp, *, restrict_pid=None, parent=None,
     return None
 
 
+def find(name: str, restrict_pid: Optional[int] = None,
+         parent=None) -> Optional["auto.Control"]:
+    """Match an already-open window by saved fingerprint. No launch,
+    no popup-baseline check — just score the live top-level windows
+    against the fingerprint and return the best fit (or None).
+
+    Used by `core.window.get()` for the "find existing only" case.
+    """
+    from core import tree
+    expected_fp = tree.load_fingerprint(name)
+    if expected_fp is None:
+        return None
+    hit = _score_candidates(expected_fp, restrict_pid=restrict_pid,
+                            parent=parent)
+    if hit is not None:
+        from core import verbs as verbs_mod
+        verbs_mod._mark_hwnd_expected(hit.NativeWindowHandle)
+    return hit
+
+
 def match(name: str, launch: str, timeout: float = 15.0,
           restrict_pid: Optional[int] = None,
           parent=None) -> Optional["auto.Control"]:

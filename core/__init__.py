@@ -2,12 +2,14 @@
 
 Everything a user needs is here. Import what you use:
 
-    from core import click, fill, match, log, runner
+    from core import click, fill, log, runner, window
 
 Verbs all take the window as the first argument (except `type`, which
-sends keys to whatever currently has focus).
+sends keys to whatever currently has focus). Live windows live on the
+`window` module — `window.notepad`, `window.open("calc")`,
+`window.close("calc")`, `window.get("notepad")`.
 """
-from core import runner
+from core import runner, window
 from core.verbs import (
     # clicks
     click,
@@ -65,5 +67,5 @@ __all__ = [
     "screenshot", "close",
     "each",
     "now", "wait", "log", "read_clipboard", "log_csv",
-    "runner",
+    "runner", "window",
 ]
