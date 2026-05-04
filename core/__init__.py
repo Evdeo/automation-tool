@@ -47,6 +47,7 @@ from core.verbs import (
     # batch
     each,
     sequence,
+    popup,
     # misc
     now,
     wait,
@@ -65,7 +66,7 @@ __all__ = [
     "read_info",
     "no_dismiss",
     "screenshot", "close",
-    "each", "sequence",
+    "each", "sequence", "popup",
     "now", "wait", "log", "read_clipboard", "log_csv",
     "runner", "window",
 ]

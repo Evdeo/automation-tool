@@ -64,6 +64,7 @@ def _reset_state():
     inspector._windows.clear()
     inspector._window_by_hwnd.clear()
     inspector._stems_seen.clear()
+    inspector._skip_popup_hwnds.clear()
     inspector._step_counter = 0
     inspector._log_file = None
     inspector._snippets_file = None
@@ -1392,7 +1393,9 @@ class TestMultiAppRegistration(unittest.TestCase):
         win_app = _FakeWin(hwnd=100, pid=42, name="Notepad")
         win_popup = _FakeWin(hwnd=200, pid=42, name="Save As")
         with mock.patch.object(inspector, "_exe_stem_for_pid",
-                               return_value="notepad"):
+                               return_value="notepad"), \
+             mock.patch.object(inspector, "_prompt_save_popup",
+                               return_value="save_as"):
             inspector._classify_window(win_app)
             name, kind = inspector._classify_window(win_popup)
         self.assertEqual(kind, "popup")
@@ -1401,6 +1404,25 @@ class TestMultiAppRegistration(unittest.TestCase):
         self.assertIsNone(inspector._windows["save_as"]["spec"])
         # `notepad` (the app) is unchanged.
         self.assertTrue(inspector._windows["notepad"]["is_app"])
+
+    def test_popup_decline_skips_registration(self):
+        # User says "n" at the prompt — the popup is added to the
+        # skip set so subsequent presses inside it are ignored.
+        win_app = _FakeWin(hwnd=100, pid=42, name="Notepad")
+        win_popup = _FakeWin(hwnd=200, pid=42, name="Save As")
+        with mock.patch.object(inspector, "_exe_stem_for_pid",
+                               return_value="notepad"), \
+             mock.patch.object(inspector, "_prompt_save_popup",
+                               return_value=None) as mp:
+            inspector._classify_window(win_app)
+            name, kind = inspector._classify_window(win_popup)
+            # Second press in the same declined HWND must NOT re-prompt.
+            inspector._classify_window(win_popup)
+        self.assertIsNone(name)
+        self.assertIsNone(kind)
+        self.assertNotIn("save_as", inspector._windows)
+        self.assertIn(200, inspector._skip_popup_hwnds)
+        mp.assert_called_once()
 
     def test_known_hwnd_returns_existing(self):
         win = _FakeWin(hwnd=100, pid=42, name="Notepad")
@@ -1431,11 +1453,14 @@ class TestMultiAppRegistration(unittest.TestCase):
         self.assertNotEqual(name_a, name_b)
 
     def test_popup_name_falls_back_when_title_empty(self):
-        # Popup with no title → name auto-derives from the exe stem.
+        # Popup with no title → prompt's default is exe-stem-based, and
+        # the user accepts that default ("" → fall back to default_base).
         win_app = _FakeWin(hwnd=100, pid=42, name="Notepad")
         win_popup = _FakeWin(hwnd=200, pid=42, name="")
         with mock.patch.object(inspector, "_exe_stem_for_pid",
-                               return_value="notepad"):
+                               return_value="notepad"), \
+             mock.patch.object(inspector, "_prompt_save_popup",
+                               return_value="notepad_dlg"):
             inspector._classify_window(win_app)
             name, kind = inspector._classify_window(win_popup)
         self.assertEqual(kind, "popup")

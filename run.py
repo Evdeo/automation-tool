@@ -6,8 +6,15 @@ Window lifecycle (`from core import window`):
   window.open(name) -> Control            launch or rebind to registered app
   window.close(name) -> None              terminate process, drop handle
   window.get(name, timeout=0) -> Control  match existing only, no launch
-  window.popup(name) -> Control           match a transient popup
   window.<name>                           cached handle for an opened app
+
+Popups:
+  popup(name, trigger_call, timeout=5) -> Control | None
+      Wrap an action verb that triggers a popup; polls for the popup
+      to appear. Reads top-down: name the popup, then the action.
+        dlg = popup("save_dialog", click(window.notepad, SAVE_BTN))
+      Omitting `trigger_call` polls for a popup that's already visible
+      or about to be (snapshot mode).
 
 Clicks (return bool, take window first):
   click(window, id)                       single click

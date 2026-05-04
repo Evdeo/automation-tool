@@ -111,6 +111,9 @@ _step_counter = 0
 _windows = {}
 _window_by_hwnd = {}
 _stems_seen = {}
+# HWNDs the user declined to save as a known popup. Subsequent presses
+# in such an HWND are dropped silently rather than re-prompting.
+_skip_popup_hwnds = set()
 
 _last_committed = None
 _pending_name = None
@@ -473,6 +476,53 @@ def _disambiguate_window_name(base):
     return f"{base}_{n}"
 
 
+def _prompt_save_popup(title, default_name):
+    """Synchronous y/N prompt: should this newly-detected popup HWND
+    be saved as a known fingerprint? Returns the chosen name, or None
+    if the user declined. Runs on the inspector worker thread; safe
+    because the inspector is interactive and single-driver."""
+    sys.stdout.write(
+        f"\n[popup detected: {title!r}] save as fingerprint? (y/N): "
+    )
+    sys.stdout.flush()
+    try:
+        ch = msvcrt.getwch()
+    except Exception:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return None
+    if ch.lower() != "y":
+        sys.stdout.write("no\n")
+        sys.stdout.flush()
+        return None
+    sys.stdout.write(f"y\nname [{default_name}]: ")
+    sys.stdout.flush()
+    buf = ""
+    while True:
+        try:
+            c = msvcrt.getwch()
+        except Exception:
+            break
+        if c in ("\r", "\n"):
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            break
+        if c == "\b":
+            if buf:
+                buf = buf[:-1]
+                sys.stdout.write("\b \b")
+                sys.stdout.flush()
+        elif c == "\x03":
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return None
+        elif c.isprintable():
+            buf += c
+            sys.stdout.write(c)
+            sys.stdout.flush()
+    return buf.strip() or default_name
+
+
 def _classify_window(win):
     """Map a top-level UIA window to a registry name.
 
@@ -521,15 +571,24 @@ def _classify_window(win):
         _emit(f"** registered app: {name} ({spec})")
         return name, "app"
 
-    # Same exe, new HWND → popup. Auto-name from title; user prompted
-    # to override at first commit.
+    # Same exe, new HWND → candidate popup. Ask the user whether to
+    # save it as a fingerprint; previously-declined HWNDs are skipped
+    # silently so we don't re-prompt on every press inside them.
+    if win_hwnd in _skip_popup_hwnds:
+        return None, None
+
     title = ""
     try:
         title = win.Name or ""
     except Exception:
         pass
-    base = _sanitize_lower(title) or f"{win_stem}_dlg"
-    name = _disambiguate_window_name(base)
+    default_base = _sanitize_lower(title) or f"{win_stem}_dlg"
+    chosen = _prompt_save_popup(title, default_base)
+    if chosen is None:
+        _skip_popup_hwnds.add(win_hwnd)
+        return None, None
+
+    name = _disambiguate_window_name(_sanitize_lower(chosen) or default_base)
     _windows[name] = {
         "hwnd": win_hwnd,
         "is_app": False,

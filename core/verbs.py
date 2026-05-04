@@ -3,11 +3,11 @@
 Every action is a function taking the window as its first arg:
 `click(window, id)`, `fill(window, id, text)`. App lifecycle lives on
 `core.window` — `window.open(name)`, `window.close(name)`,
-`window.get(name)`, `window.popup(name)`.
+`window.get(name)`. Popup matching is the top-level `popup(...)` verb.
 
 Synchronous popup dismiss runs before every action verb. The
 "expected" set seeds from runner-start snapshot and grows with every
-`window.open` / `window.popup` return — see `_dismiss_unexpected_popups`.
+`window.open` / `popup(...)` return — see `_dismiss_unexpected_popups`.
 """
 import csv as _csv
 import ctypes as _ctypes
@@ -292,15 +292,10 @@ def _dismiss_unexpected_popups(window=None):
 
 
 class no_dismiss:
-    """Context manager: suppress popup dismiss inside the block. Use
-    when a sequence intentionally creates / interacts with a popup
-    before `window.popup()` has had a chance to register it.
-
-        with no_dismiss():
-            hotkey(window.notepad, "ctrl", "s")
-            # Save dialog appears here; without no_dismiss it'd be
-            # killed before window.popup() can register it.
-            dlg = window.popup("save_dialog")
+    """Context manager: suppress the per-verb auto-dismiss inside the
+    block. Use when a sequence of action verbs needs to keep a
+    transient window alive between calls (e.g., typing into a Save As
+    dialog where each verb's auto-dismiss would otherwise kill it).
     """
 
     def __enter__(self):
@@ -568,7 +563,7 @@ def read_info(window: Control, control_id: str) -> dict:
     }
 
 
-# --- each ------------------------------------------------------------------
+# --- each / sequence / popup ----------------------------------------------
 
 
 def each(verb, window: Control, ids, **kwargs) -> list:
@@ -578,6 +573,35 @@ def each(verb, window: Control, ids, **kwargs) -> list:
     before the next id rather than rolling the batch back.
     """
     return [verb(window, ctrl_id, **kwargs) for ctrl_id in ids]
+
+
+def popup(name: str, _trigger=None, *, timeout: float = 5.0,
+          restrict_pid=None, parent=None) -> "Control | None":
+    """Wait for a popup matching `name`'s saved fingerprint to appear
+    since the last action verb. Wrap the trigger verb's call so the
+    action runs first:
+
+        dlg = popup("save_dialog", click(window.notepad, SAVE_BTN))
+
+    The trigger verb runs first (its `@_action_verb` decorator
+    captures the HWND baseline at entry); `popup` then polls for up
+    to `timeout` seconds for a new top-level window matching the
+    fingerprint. Returns Control on match, None on timeout.
+
+    `_trigger` is the verb's return value — accepted positionally so
+    the wrapping syntax falls out naturally; its value is ignored. It
+    can be omitted for the snapshot case (popup already open).
+    """
+    from core import app as app_mod
+    deadline = _time.time() + timeout
+    while True:
+        hit = app_mod.match(name, launch="popup",
+                            restrict_pid=restrict_pid, parent=parent)
+        if hit is not None:
+            return hit
+        if _time.time() >= deadline:
+            return None
+        _time.sleep(0.2)
 
 
 def sequence(verb, window: Control, ids, *, attempts: int = 3,

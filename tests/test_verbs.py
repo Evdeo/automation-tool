@@ -745,17 +745,45 @@ class TestWindowOpen(unittest.TestCase):
                 window.open("foo")
 
 
-class TestWindowPopup(unittest.TestCase):
-    """`window.popup` delegates to `core.app.match` with launch='popup'."""
+class TestPopupVerb(unittest.TestCase):
+    """`popup(name, _trigger, timeout)` polls `core.app.match` with
+    launch='popup' until a match appears or the timeout elapses."""
 
-    def test_delegates_to_core_app_match(self):
-        from core import window
+    def test_returns_first_match_immediately(self):
         sentinel = object()
-        with mock.patch("core.app.match", return_value=sentinel) as mm:
-            result = window.popup("dlg", restrict_pid=42, parent="p")
+        with mock.patch("core.app.match", return_value=sentinel) as mm, \
+             mock.patch.object(verbs._time, "sleep") as msleep:
+            result = verbs.popup("dlg", True, timeout=5.0)
         self.assertIs(result, sentinel)
         mm.assert_called_once_with("dlg", launch="popup",
-                                   restrict_pid=42, parent="p")
+                                   restrict_pid=None, parent=None)
+        msleep.assert_not_called()
+
+    def test_polls_until_match_appears(self):
+        sentinel = object()
+        # Three polls: None, None, hit.
+        with mock.patch("core.app.match",
+                        side_effect=[None, None, sentinel]) as mm, \
+             mock.patch.object(verbs._time, "sleep"):
+            result = verbs.popup("dlg")
+        self.assertIs(result, sentinel)
+        self.assertEqual(mm.call_count, 3)
+
+    def test_returns_none_on_timeout(self):
+        # Use real (small) timeout so the deadline elapses.
+        with mock.patch("core.app.match", return_value=None), \
+             mock.patch.object(verbs._time, "sleep"):
+            result = verbs.popup("dlg", timeout=0.0)
+        self.assertIsNone(result)
+
+    def test_trigger_arg_is_consumed_and_ignored(self):
+        # popup("name", click(...)) — the click's return value is the
+        # trigger arg; popup must not propagate it back as the result.
+        sentinel = object()
+        with mock.patch("core.app.match", return_value=sentinel), \
+             mock.patch.object(verbs._time, "sleep"):
+            result = verbs.popup("dlg", "ignored_trigger_value")
+        self.assertIs(result, sentinel)
 
 
 # --- Synchronous popup dismiss ----------------------------------------------
