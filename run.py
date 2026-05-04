@@ -61,7 +61,6 @@ Batched calls:
 Other:
   no_dismiss()                            context manager: skip auto-dismiss
   screenshot(window, path) -> None        PNG of window's bounding rect
-  close(window) -> None                   terminate the window's process
   log(table, *values) -> None             append a row to SQLite table
   log_csv(path, *rows, header=None) -> None
   read_clipboard() -> str
@@ -141,7 +140,10 @@ def state_calc(data):
     return None, data
 
 
-STATES = {"notepad": state_notepad, "calc": state_calc}
+STATES = {
+    "notepad": state_notepad,
+    "calc":    state_calc,
+}
 
 
 if __name__ == "__main__":

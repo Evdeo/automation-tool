@@ -1027,30 +1027,5 @@ class TestScreenshot(unittest.TestCase):
         self.assertTrue(out.parent.exists())
 
 
-class TestClose(unittest.TestCase):
-    def test_close_terminates_owning_process(self):
-        win = _FakeWindow(pid=9876)
-        fake_proc = mock.MagicMock()
-        with mock.patch.object(verbs.psutil, "Process",
-                               return_value=fake_proc) as mp:
-            verbs.close(win)
-        mp.assert_called_once_with(9876)
-        fake_proc.terminate.assert_called_once()
-
-    def test_close_silently_ignores_no_such_process(self):
-        win = _FakeWindow(pid=9876)
-        with mock.patch.object(verbs.psutil, "Process",
-                               side_effect=verbs.psutil.NoSuchProcess(9876)):
-            verbs.close(win)
-
-    def test_close_silently_ignores_access_denied(self):
-        win = _FakeWindow(pid=9876)
-        with mock.patch.object(
-            verbs.psutil, "Process",
-            side_effect=verbs.psutil.AccessDenied(9876),
-        ):
-            verbs.close(win)
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)

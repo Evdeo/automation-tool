@@ -676,16 +676,6 @@ def screenshot(window: Control, path: PathArg) -> None:
     img.save(path)
 
 
-def close(window: Control) -> None:
-    """Terminate the process owning `window`. Use for end-of-test
-    cleanup. NOT used for popup dismissal — that's `_dismiss_one`,
-    which sends Esc/WM_CLOSE without killing the host process."""
-    try:
-        psutil.Process(window.ProcessId).terminate()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        pass
-
-
 # --- Misc -------------------------------------------------------------------
 
 

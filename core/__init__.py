@@ -43,7 +43,6 @@ from core.verbs import (
     no_dismiss,
     # orchestrations
     screenshot,
-    close,
     # batch
     each,
     sequence,
@@ -65,7 +64,7 @@ __all__ = [
     "wait_visible", "wait_enabled", "wait_gone",
     "read_info",
     "no_dismiss",
-    "screenshot", "close",
+    "screenshot",
     "each", "sequence", "popup",
     "now", "wait", "log", "read_clipboard", "log_csv",
     "runner", "window",
