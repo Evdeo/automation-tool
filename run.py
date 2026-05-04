@@ -4,16 +4,16 @@ Demonstrates the everyday surface in two states:
   - state machine wiring via `runner.start`
   - swapping apps that can't coexist with `window.open` / `window.close`
     (`prelaunch=False` so the runner doesn't open both up front)
-  - `fill`, `click`, `click_when_enabled`, `hotkey`, `wait_visible`
-  - `each` as an atomic batch — popup mid-loop restarts from id 0
+  - `fill`, `click_after`, `click_when_enabled`, `hotkey`, `wait_visible`
+  - `each` as an atomic batch — popup mid-sequence restarts from id 0
   - `log` + `now` for a run-scoped audit trail
 
 For the full feature tour (popups, screenshots, save dialogs, color
 audits, etc.) see showcase.py. Run:  python run.py
 """
 from core import (
-    click, click_when_enabled, fill, hotkey,
-    wait_visible, is_enabled, each, read_clipboard,
+    click_after, click_when_enabled, fill, hotkey,
+    wait_visible, each, read_clipboard,
     log, now, runner, window,
 )
 
@@ -48,29 +48,18 @@ def state_notepad(data):
 
 
 def state_calc(data):
-    """Swap to Calculator, audit the keypad, compute 47 + 32, log it."""
+    """Swap to Calculator, click 47 + 32 = via each + click_after."""
     window.open("calc")
     if not wait_visible(window.calc, CALC_PLUS, timeout=15):
         log("results", "calc_init_failed", "")
         return None, data
-
-    # `each` runs a verb across many ids as one atomic block: if a
-    # popup interrupts mid-sequence, the popup is dismissed and the
-    # whole loop restarts from id 0. Use it whenever a partial run
-    # would corrupt state — here, to confirm every digit button is
-    # enabled before we trust the keypad. Bail out if any are missing
-    # rather than producing a wrong result.
-    if not all(each(is_enabled, window.calc, list(CALC_DIGITS.values()))):
-        log("results", "calc_keypad_unhealthy", "")
-        return None, data
-
     click_when_enabled(window.calc, CALC_CLEAR, timeout=5)
-    for d in "47":
-        click(window.calc, CALC_DIGITS[d])
-    click(window.calc, CALC_PLUS)
-    for d in "32":
-        click(window.calc, CALC_DIGITS[d])
-    click(window.calc, CALC_EQUALS)
+
+    # `each` runs the sequence atomically — if a popup interrupts
+    # between presses it's dismissed and the loop restarts from id 0.
+    sequence = [CALC_DIGITS["4"], CALC_DIGITS["7"], CALC_PLUS,
+                CALC_DIGITS["3"], CALC_DIGITS["2"], CALC_EQUALS]
+    each(click_after, window.calc, sequence, delay=0.1)
 
     hotkey(window.calc, "ctrl", "c")
     log("results", "calc_result", read_clipboard().strip())
