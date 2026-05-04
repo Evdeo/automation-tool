@@ -4,7 +4,7 @@
   - swap apps that can't coexist via `window.open` / `window.close`
     (`prelaunch=False` so the runner doesn't open both up front)
   - `fill`, `click_after`, `click_when_enabled`, `hotkey`, `wait_visible`
-  - `each` as an atomic batch — popup mid-sequence restarts from id 0
+  - `each` for batched verb calls (per-call popup dismiss still runs)
   - `log` + `now` for a run-scoped audit trail
 
 Full feature tour: showcase.py.  Run:  python run.py
@@ -52,8 +52,8 @@ def state_calc(data):
         return None, data
     click_when_enabled(window.calc, CLEAR, timeout=5)
 
-    # `each` runs the sequence atomically — if a popup interrupts
-    # between presses it's dismissed and the loop restarts from id 0.
+    # `each` calls click_after on every id in order, with the same
+    # auto-dismiss every action verb does on its own.
     each(click_after, window.calc,
          [FOUR, SEVEN, PLUS, THREE, TWO, EQUALS], delay=0.1)
 

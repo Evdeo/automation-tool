@@ -871,13 +871,6 @@ class TestHwndBaselineUpdates(_DismissTestBase):
             verbs.click(_FakeWindow(), "BTN")
         self.assertEqual(verbs._hwnd_baseline_set, {55, 66, 77})
 
-    def test_each_refreshes_baseline_at_entry(self):
-        with mock.patch("core.app._enumerate_top_level_hwnds",
-                        return_value=[101]), \
-             mock.patch.object(verbs, "_dismiss_unexpected_popups"):
-            verbs.each(lambda w, i: i, _FakeWindow(), ["A"])
-        self.assertEqual(verbs._hwnd_baseline_set, {101})
-
     def test_baseline_snapshot_returns_frozenset(self):
         verbs._hwnd_baseline_set.update([7, 8, 9])
         snap = verbs._hwnd_baseline_snapshot()
@@ -891,52 +884,6 @@ class TestHwndBaselineUpdates(_DismissTestBase):
     def test_mark_hwnd_expected_ignores_zero(self):
         verbs._mark_hwnd_expected(0)
         self.assertNotIn(0, verbs._expected_hwnds)
-
-
-class TestEachAutoRetryOnPopup(_DismissTestBase):
-    """`each` snapshots the HWND set at entry; if a new unexpected HWND
-    appears between two elements (not after the last), it dismisses and
-    restarts the loop from element 0. Max 3 attempts."""
-
-    def test_no_popup_runs_through_once(self):
-        # Mock the entry-time pre-dismiss separately so we can isolate
-        # the between-element retry path.
-        calls = []
-        with mock.patch("core.app._enumerate_top_level_hwnds",
-                        return_value=[1, 2]), \
-             mock.patch.object(verbs, "_dismiss_unexpected_popups"), \
-             mock.patch.object(verbs, "_dismiss_one") as mdo:
-            verbs.each(lambda w, i: calls.append(i), _FakeWindow(),
-                       ["A", "B", "C"])
-        self.assertEqual(calls, ["A", "B", "C"])
-        # No retry path triggered → between-element _dismiss_one never fires.
-        mdo.assert_not_called()
-
-    def test_popup_between_elements_triggers_restart(self):
-        # Sequence:
-        #   capture_baseline at entry → enum returns [1, 2]
-        #   element A → enum returns [1, 2, 99] (unexpected popup!)
-        #     between-element check fires → dismiss(99), restart
-        #   element A again → enum returns [1, 2]
-        #   element B → enum returns [1, 2]
-        #   end (no post-last check) → return
-        enum_returns = iter([
-            [1, 2],          # initial baseline
-            [1, 2, 99],      # post-A on attempt 1: popup appeared
-            [1, 2],          # baseline refresh after dismiss
-            [1, 2],          # post-A on attempt 2
-            [1, 2],          # post-B (last) is NOT checked, so this isn't consumed
-        ])
-        with mock.patch("core.app._enumerate_top_level_hwnds",
-                        side_effect=lambda: next(enum_returns)), \
-             mock.patch.object(verbs, "_dismiss_unexpected_popups"), \
-             mock.patch.object(verbs, "_dismiss_one") as mdo:
-            calls = []
-            verbs.each(lambda w, i: calls.append(i), _FakeWindow(),
-                       ["A", "B"])
-        # Restart means A runs twice, B runs once.
-        self.assertEqual(calls, ["A", "A", "B"])
-        mdo.assert_called_once_with(99)
 
 
 # --- screenshot, close ------------------------------------------------------

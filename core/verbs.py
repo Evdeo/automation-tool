@@ -568,55 +568,16 @@ def read_info(window: Control, control_id: str) -> dict:
     }
 
 
-# --- each (atomic retry boundary) ------------------------------------------
+# --- each ------------------------------------------------------------------
 
 
 def each(verb, window: Control, ids, **kwargs) -> list:
-    """Apply `verb(window, id, **kwargs)` to each id in `ids`.
-
-    Treated as one popup-retry boundary: if an unexpected popup
-    appears between any two elements (not after the last), the popup
-    is dismissed and the whole sequence restarts from element 0.
-    Max 3 attempts. Returns the final results list either way.
-
-    Internal verb calls bypass their own pre-dismiss (a thread-local
-    flag suppresses it) so the each retains the boundary.
-
-    `ids` must be idempotent for the typical re-click case.
+    """Apply `verb(window, id, **kwargs)` to each id in `ids` and
+    return the list of results. Each call goes through the verb's
+    own pre-dismiss, so a popup appearing mid-sequence is cleared
+    before the next id rather than rolling the batch back.
     """
-    _capture_hwnd_baseline()
-    _dismiss_unexpected_popups(window)
-
-    last_idx = len(ids) - 1
-    results = []
-    for attempt in range(3):
-        # Start the each block: suppress per-call dismiss inside.
-        _dismiss_paused.depth = getattr(_dismiss_paused, "depth", 0) + 1
-        try:
-            results = []
-            interrupted = False
-            for i, ctrl_id in enumerate(ids):
-                results.append(verb(window, ctrl_id, **kwargs))
-                if i < last_idx:
-                    from core.app import _enumerate_top_level_hwnds
-                    current = set(_enumerate_top_level_hwnds())
-                    new_unexpected = {
-                        h for h in current - _hwnd_baseline_set - _expected_hwnds
-                        if _hwnd_pid(h) not in _trusted_pids
-                        and not _is_system_window(h)
-                    }
-                    if new_unexpected:
-                        for hwnd in new_unexpected:
-                            _dismiss_one(hwnd)
-                        # Refresh baseline for the retry.
-                        _capture_hwnd_baseline()
-                        interrupted = True
-                        break
-            if not interrupted:
-                return results
-        finally:
-            _dismiss_paused.depth -= 1
-    return results
+    return [verb(window, ctrl_id, **kwargs) for ctrl_id in ids]
 
 
 # --- Orchestrations ---------------------------------------------------------
