@@ -47,7 +47,9 @@ Batched calls:
   sequence(verb, window, ids, attempts=3, **kwargs) -> list
       Same shape, but if a popup interrupts mid-flow it's dismissed
       and the loop restarts from id 0. Use for DEPENDENT sequences
-      (menu navigation: File -> Save As -> Confirm).
+      (menu navigation: File -> Save As -> Confirm). `verb` may be
+      one callable (applied to all ids) or a list of callables the
+      same length as `ids` (verb[i] applied to ids[i]).
 
 Other:
   no_dismiss()                            context manager: skip auto-dismiss

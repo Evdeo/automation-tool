@@ -292,6 +292,26 @@ class TestSequence(unittest.TestCase):
         self.assertEqual(calls, ["A", "A", "B"])
         mdo.assert_called_once_with(99)
 
+    def test_per_step_verbs(self):
+        # verb=list of callables → verb[i] runs on ids[i].
+        with mock.patch("core.app._enumerate_top_level_hwnds",
+                        return_value=[1]), \
+             mock.patch.object(verbs, "_dismiss_unexpected_popups"):
+            calls = []
+            verbs.sequence(
+                [lambda w, i: calls.append(("a", i)),
+                 lambda w, i: calls.append(("b", i)),
+                 lambda w, i: calls.append(("c", i))],
+                _FakeWindow(),
+                ["X", "Y", "Z"],
+            )
+        self.assertEqual(calls, [("a", "X"), ("b", "Y"), ("c", "Z")])
+
+    def test_verb_list_length_mismatch_raises(self):
+        with self.assertRaisesRegex(ValueError, "verb list length"):
+            verbs.sequence([lambda w, i: None, lambda w, i: None],
+                           _FakeWindow(), ["A", "B", "C"])
+
     def test_attempts_kwarg_caps_retries(self):
         # Persistent popup → exhaust attempts and return whatever we have.
         enum_returns = iter([

@@ -582,15 +582,29 @@ def each(verb, window: Control, ids, **kwargs) -> list:
 
 def sequence(verb, window: Control, ids, *, attempts: int = 3,
              **kwargs) -> list:
-    """Run `verb(window, id, **kwargs)` across `ids` in order, where
-    each step depends on the previous (e.g. menu navigation: File →
-    Save As → Confirm). If a popup appears between two steps, dismiss
-    it and restart from id 0 — because the popup likely collapsed the
-    menu, the remaining ids would no longer be reachable.
+    """Run an ordered sequence where each step depends on the previous
+    (e.g. menu navigation: File → Save As → Confirm). If a popup
+    appears between two steps, dismiss it and restart from id 0 —
+    the popup likely collapsed the menu, so the remaining ids would
+    no longer be reachable.
+
+    `verb` is either a single callable (applied to every id) or a
+    list of callables the same length as `ids` (verb[i] applied to
+    ids[i]). For per-step kwargs use `functools.partial`.
 
     Up to `attempts` tries (default 3). Use `each` for independent
     batched calls where partial progress is fine.
     """
+    if callable(verb):
+        verb_list = [verb] * len(ids)
+    else:
+        verb_list = list(verb)
+        if len(verb_list) != len(ids):
+            raise ValueError(
+                f"sequence: verb list length {len(verb_list)} does not "
+                f"match ids length {len(ids)}"
+            )
+
     _capture_hwnd_baseline()
     _dismiss_unexpected_popups(window)
 
@@ -602,7 +616,7 @@ def sequence(verb, window: Control, ids, *, attempts: int = 3,
             results = []
             interrupted = False
             for i, ctrl_id in enumerate(ids):
-                results.append(verb(window, ctrl_id, **kwargs))
+                results.append(verb_list[i](window, ctrl_id, **kwargs))
                 if i < last_idx:
                     from core.app import _enumerate_top_level_hwnds
                     current = set(_enumerate_top_level_hwnds())
