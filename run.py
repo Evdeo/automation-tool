@@ -1,15 +1,13 @@
 """Minimal example: drive Notepad, then swap to Calculator.
 
-Demonstrates the everyday surface in two states:
   - state machine wiring via `runner.start`
-  - swapping apps that can't coexist with `window.open` / `window.close`
+  - swap apps that can't coexist via `window.open` / `window.close`
     (`prelaunch=False` so the runner doesn't open both up front)
   - `fill`, `click_after`, `click_when_enabled`, `hotkey`, `wait_visible`
   - `each` as an atomic batch — popup mid-sequence restarts from id 0
   - `log` + `now` for a run-scoped audit trail
 
-For the full feature tour (popups, screenshots, save dialogs, color
-audits, etc.) see showcase.py. Run:  python run.py
+Full feature tour: showcase.py.  Run:  python run.py
 """
 from core import (
     click_after, click_when_enabled, fill, hotkey,
@@ -18,22 +16,21 @@ from core import (
 )
 
 
-# Both apps registered; prelaunch=False so we open/close them per state.
 APPS = {"notepad": "notepad.exe", "calc": "calc.exe"}
 
 
-# Notepad controls (capture with `python inspector.py`).
+# Capture control ids with `python inspector.py`.
 EDITOR    = "0.0.0"
 FILE_MENU = "0.2.0.0.0"
 
-# Calculator controls (Calc has stable UIA Names — name:role works).
-CALC_PLUS    = "Plus:ButtonControl"
-CALC_EQUALS  = "Equals:ButtonControl"
-CALC_CLEAR   = "Clear:ButtonControl"
-CALC_DIGITS  = {str(i): f"{n}:ButtonControl" for i, n in enumerate([
-    "Zero", "One", "Two", "Three", "Four",
-    "Five", "Six", "Seven", "Eight", "Nine",
-])}
+# Calculator buttons — name-based ids (Calc exposes stable UIA Names).
+PLUS    = "Plus:ButtonControl"
+EQUALS  = "Equals:ButtonControl"
+CLEAR   = "Clear:ButtonControl"
+TWO     = "Two:ButtonControl"
+THREE   = "Three:ButtonControl"
+FOUR    = "Four:ButtonControl"
+SEVEN   = "Seven:ButtonControl"
 
 
 def state_notepad(data):
@@ -50,16 +47,15 @@ def state_notepad(data):
 def state_calc(data):
     """Swap to Calculator, click 47 + 32 = via each + click_after."""
     window.open("calc")
-    if not wait_visible(window.calc, CALC_PLUS, timeout=15):
+    if not wait_visible(window.calc, PLUS, timeout=15):
         log("results", "calc_init_failed", "")
         return None, data
-    click_when_enabled(window.calc, CALC_CLEAR, timeout=5)
+    click_when_enabled(window.calc, CLEAR, timeout=5)
 
     # `each` runs the sequence atomically — if a popup interrupts
     # between presses it's dismissed and the loop restarts from id 0.
-    sequence = [CALC_DIGITS["4"], CALC_DIGITS["7"], CALC_PLUS,
-                CALC_DIGITS["3"], CALC_DIGITS["2"], CALC_EQUALS]
-    each(click_after, window.calc, sequence, delay=0.1)
+    each(click_after, window.calc,
+         [FOUR, SEVEN, PLUS, THREE, TWO, EQUALS], delay=0.1)
 
     hotkey(window.calc, "ctrl", "c")
     log("results", "calc_result", read_clipboard().strip())

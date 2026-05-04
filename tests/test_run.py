@@ -108,10 +108,6 @@ class TestWiring(unittest.TestCase):
         for path in run.APPS.values():
             self.assertTrue(path.endswith(".exe"))
 
-    def test_calc_digit_map_complete(self):
-        self.assertEqual(set(run.CALC_DIGITS),
-                         set("0123456789"))
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
