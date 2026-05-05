@@ -792,7 +792,16 @@ def _gather_unsafe(x, y):
         else:
             color_reason = "control bbox is zero-size"
     except Exception as e:
-        color_reason = f"BoundingRectangle raised: {type(e).__name__}: {e}"
+        # Some controls (minimized windows, virtualised list items)
+        # have BoundingRectangle implementations that overflow inside
+        # uiautomation's COM marshaling. Fall back to the cursor
+        # position so the user at least gets the pixel they clicked.
+        color = _read_pixel(x, y)
+        bbox_center = (x, y)
+        color_reason = (
+            f"BoundingRectangle raised: {type(e).__name__}: {e}; "
+            f"sampled cursor position ({x},{y}) instead"
+        )
 
     # UIA TogglePattern — present on checkboxes, radio buttons, switches,
     # and tri-state widgets. Surfacing it tells the user to reach for
