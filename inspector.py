@@ -1161,6 +1161,10 @@ def _handle_color_sample():
         try:
             path = _save_color_card(rows)
             _emit(f"  → reference card: {path}")
+            try:
+                os.startfile(str(path))
+            except Exception as e:
+                _emit(f"  (auto-open failed: {e})")
         except Exception as e:
             _emit(f"[color-sample] PNG card skipped: {e}")
 
