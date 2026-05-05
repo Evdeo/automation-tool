@@ -647,33 +647,33 @@ def _get_cursor_pos():
     return pt.x, pt.y
 
 
-# GetPixel returns DWORD COLORREF; explicit restype keeps signed-int
-# overflow from masking the high byte on the Python side.
-ctypes.windll.gdi32.GetPixel.restype = ctypes.c_uint32
-
-
 def _read_pixel(x, y):
-    """Read RGB at virtual-screen (x, y) via Win32 GDI. More reliable
-    than pyautogui.pixel — that function takes a fresh full-screen
-    PIL screenshot, which on multi-monitor setups only covers the
-    primary display and on per-monitor-DPI setups drifts vs. the
-    physical coords UIA returns. GetPixel queries the screen DC
-    directly, so neither problem applies. Returns (r, g, b) on
-    success, None on failure."""
-    user32 = ctypes.windll.user32
-    hdc = user32.GetDC(0)
-    if not hdc:
+    """Read RGB at virtual-screen (x, y) via PIL.ImageGrab — BitBlt
+    from the DWM compositor over the full virtual screen.
+
+    Two earlier approaches both failed in real use:
+      * pyautogui.pixel takes a primary-monitor-only screenshot, so
+        coords on a secondary display return wrong / None.
+      * GetPixel(GetDC(0), ...) is clipped to the primary monitor's
+        DC region too — coords outside it return CLR_INVALID.
+
+    ImageGrab.grab(all_screens=True) covers every monitor in the
+    virtual screen rectangle, with DPI scaling resolved by the OS
+    compositor. Returns (r, g, b) on success, None on failure.
+    """
+    from PIL import ImageGrab
+    try:
+        img = ImageGrab.grab(bbox=(int(x), int(y), int(x) + 1, int(y) + 1),
+                             all_screens=True)
+    except Exception:
         return None
     try:
-        color_ref = ctypes.windll.gdi32.GetPixel(hdc, int(x), int(y))
-        if color_ref == 0xFFFFFFFF:  # CLR_INVALID
-            return None
-        # Win32 COLORREF byte order is 0x00BBGGRR.
-        return (color_ref & 0xFF,
-                (color_ref >> 8) & 0xFF,
-                (color_ref >> 16) & 0xFF)
-    finally:
-        user32.ReleaseDC(0, hdc)
+        rgb = img.getpixel((0, 0))
+    except Exception:
+        return None
+    if not rgb or isinstance(rgb, int) or len(rgb) < 3:
+        return None
+    return (int(rgb[0]), int(rgb[1]), int(rgb[2]))
 
 
 def _screenshot_path(window_name, suggested_name, struct_id):
@@ -788,7 +788,7 @@ def _gather_unsafe(x, y):
             bbox_center = (cx, cy)
             color = _read_pixel(cx, cy)
             if color is None:
-                color_reason = f"GetPixel({cx},{cy}) returned CLR_INVALID"
+                color_reason = f"ImageGrab at ({cx},{cy}) failed"
         else:
             color_reason = "control bbox is zero-size"
     except Exception as e:
