@@ -107,6 +107,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 _LOG_PATH = _PROJECT_ROOT / "data" / "inspector.txt"
 _STEPS_DIR = _PROJECT_ROOT / config.INSPECTOR_STEPS_DIR
 _SNIPPETS_DIR = _PROJECT_ROOT / config.INSPECTOR_SNIPPETS_DIR
+_COLOR_SAMPLES_DIR = _PROJECT_ROOT / config.INSPECTOR_COLOR_SAMPLES_DIR
 _FINGERPRINTS_DIR = _PROJECT_ROOT / config.WINDOW_FINGERPRINT_DIR
 
 _log_file = None
@@ -1103,8 +1104,9 @@ def _dispatch_event(item):
 
 def _handle_color_sample(start, end):
     """F2 sampler: screenshot the rectangle from `start` to `end`,
-    bucket each channel to the nearest 16, and print the most common
-    colours sorted by pixel count."""
+    bucket each channel to the nearest 16, print the most common
+    colours by pixel count, and save a PNG reference card with one
+    fat swatch per colour for easy visual matching."""
     import numpy as np
     x0, y0 = start
     x1, y1 = end
@@ -1127,11 +1129,66 @@ def _handle_color_sample(start, end):
     total = int(counts.sum())
     _emit(f"\n[color-sample] {w}x{h} region at ({left},{top}); "
           f"{total} px scanned; top colours (bucketed by 16):")
+    rows = []
     for idx in order[:20]:
         r, g, b = (int(v) for v in pixels[idx])
         c = int(counts[idx])
         pct = 100.0 * c / total
         _emit(f"  ({r:3}, {g:3}, {b:3})  {c:>7}  {pct:5.1f}%")
+        rows.append(((r, g, b), c, pct))
+    if rows:
+        try:
+            path = _save_color_card(rows)
+            _emit(f"  → reference card: {path}")
+        except Exception as e:
+            _emit(f"[color-sample] PNG card skipped: {e}")
+
+
+def _save_color_card(rows):
+    """Render `rows` (list of ((r, g, b), count, pct)) into a PNG with
+    one row per colour: RGB + count + percent on the left, a wide
+    swatch of the actual colour on the right. Saved under
+    data/inspector_color_samples/<timestamp>.png; path returned."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    row_height = 90
+    padding = 24
+    text_width = 480
+    swatch_width = 540
+    img_w = padding + text_width + padding + swatch_width + padding
+    img_h = padding * 2 + row_height * len(rows)
+
+    img = Image.new("RGB", (img_w, img_h), color=(248, 248, 248))
+    draw = ImageDraw.Draw(img)
+    font = None
+    for candidate in ("DejaVuSansMono.ttf", "Consolas.ttf", "consola.ttf",
+                      "cour.ttf"):
+        try:
+            font = ImageFont.truetype(candidate, 30)
+            break
+        except OSError:
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+
+    for i, ((r, g, b), count, pct) in enumerate(rows):
+        y = padding + i * row_height
+        text = f"({r:3}, {g:3}, {b:3})   #{r:02x}{g:02x}{b:02x}\n" \
+               f"{count:>8} px   {pct:5.1f}%"
+        draw.multiline_text((padding, y + 12), text, fill=(20, 20, 20),
+                            font=font, spacing=6)
+        sx0 = padding + text_width + padding
+        sy0 = y + 8
+        sx1 = sx0 + swatch_width
+        sy1 = y + row_height - 8
+        draw.rectangle([sx0, sy0, sx1, sy1], fill=(int(r), int(g), int(b)),
+                       outline=(0, 0, 0), width=2)
+
+    _COLOR_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    path = _COLOR_SAMPLES_DIR / (
+        f"sample_{datetime.now():%Y-%m-%d_%H-%M-%S}.png")
+    img.save(path)
+    return path
 
 
 def _worker():

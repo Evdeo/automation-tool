@@ -7,6 +7,7 @@ TREE_SNAPSHOT_DIR = Path("data/snapshots")
 WINDOW_FINGERPRINT_DIR = Path("data/window_fingerprints")
 INSPECTOR_STEPS_DIR = Path("data/inspector_steps")
 INSPECTOR_SNIPPETS_DIR = Path("data/inspector_snippets")
+INSPECTOR_COLOR_SAMPLES_DIR = Path("data/inspector_color_samples")
 
 FINGERPRINT_MAX_DEPTH = 4
 FINGERPRINT_THRESHOLD = 0.75
@@ -21,14 +22,14 @@ FINGERPRINT_RECOVERY_THRESHOLD = 0.5
 POPUP_DISMISS_KEY = "esc"
 POPUP_CHECK_DEEP = False
 
-RESULTS_DIR = Path("data/results")
+OUTPUT_DIR = Path("data/output")
 RESULT_FILENAME = "data.txt"
 
 # Per-run output: a fresh timestamped folder so each pass writes its
 # own data file. Computed at import; --loop respawns the process per
 # iteration, so each iteration gets a fresh stamp.
 SAVE_PATH = (
-    RESULTS_DIR / datetime.now().strftime("%Y-%m-%d_%H-%M-%S") / RESULT_FILENAME
+    OUTPUT_DIR / datetime.now().strftime("%Y-%m-%d_%H-%M-%S") / RESULT_FILENAME
 ).resolve()
 
 LOOP_TIMEOUT_MIN = 15

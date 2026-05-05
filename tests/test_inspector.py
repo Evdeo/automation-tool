@@ -1357,6 +1357,35 @@ class TestFormatToggle(unittest.TestCase):
                          "indeterminate")
 
 
+class TestColorCardSave(unittest.TestCase):
+    """`_save_color_card` writes a PNG reference card next to the F2
+    sampler's terminal output. Each row carries a fat swatch of the
+    actual colour for visual matching."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="inspector_card_"))
+        self._orig = inspector._COLOR_SAMPLES_DIR
+        inspector._COLOR_SAMPLES_DIR = self.tmp
+
+    def tearDown(self):
+        inspector._COLOR_SAMPLES_DIR = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_writes_png_with_one_row_per_colour(self):
+        rows = [((255, 0, 0), 100, 50.0),
+                ((0, 255, 0), 60, 30.0),
+                ((0, 0, 255), 40, 20.0)]
+        path = inspector._save_color_card(rows)
+        self.assertTrue(path.exists())
+        # PNG height scales with the number of rows.
+        from PIL import Image
+        img = Image.open(path)
+        # 24px padding top + bottom + 90px per row × 3 = 318px.
+        self.assertEqual(img.size[1], 24 * 2 + 90 * 3)
+        # Width is fixed.
+        self.assertGreater(img.size[0], 1000)
+
+
 # --- Multi-app registration -------------------------------------------------
 
 

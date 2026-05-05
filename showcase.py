@@ -75,7 +75,7 @@ CALC_DIGITS  = {
 
 
 def _audit_csv():
-    return config.RESULTS_DIR / "showcase_audit.csv"
+    return config.OUTPUT_DIR / "showcase_audit.csv"
 
 
 def _digits(s):
@@ -217,7 +217,7 @@ def state_compose_report(data):
         "===== Daily Showcase Report =====\n"
         f"Generated: {now()}\n"
         f"Calculator computed 47 + 32 = {getattr(data, 'calc_result', '?')}\n"
-        "Audit: see data/results/showcase_audit.csv\n"
+        "Audit: see data/output/showcase_audit.csv\n"
     )
     fill(window.notepad, EDITOR, body)
     # `type` doesn't touch the window — it sends keys to whatever has
@@ -253,13 +253,13 @@ def state_visual_snapshot(data):
     Notepad's chrome — proves `check_color` works on multiple windows
     in one session."""
     print("[showcase] visual_snapshot: capturing PNG + color samples...")
-    out = config.RESULTS_DIR / "showcase_report.png"
+    out = config.OUTPUT_DIR / "showcase_report.png"
     screenshot(window.notepad, out)
 
     file_color = check_color(window.notepad, FILE_MENU)
     edit_color = check_color(window.notepad, EDIT_MENU)
     log_csv(
-        config.RESULTS_DIR / "showcase_colors.csv",
+        config.OUTPUT_DIR / "showcase_colors.csv",
         [now(), "notepad_file", list(file_color),
          "notepad_edit", list(edit_color)],
         header=["ts", "k1", "v1", "k2", "v2"],
@@ -278,7 +278,7 @@ def state_save(data):
     # Absolute path — Notepad's Save As resolves relative paths against
     # its own CWD, not ours, so a non-resolved Path silently saves to
     # the wrong place.
-    target = (config.RESULTS_DIR /
+    target = (config.OUTPUT_DIR /
               f"showcase_report_{datetime.now():%H%M%S}.txt").resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
@@ -319,8 +319,8 @@ def state_summary(data):
     if report:
         print(f"  saved      : {report}")
     print(f"  audit csv  : {_audit_csv()}")
-    print(f"  colors csv : {config.RESULTS_DIR / 'showcase_colors.csv'}")
-    print(f"  screenshot : {config.RESULTS_DIR / 'showcase_report.png'}")
+    print(f"  colors csv : {config.OUTPUT_DIR / 'showcase_colors.csv'}")
+    print(f"  screenshot : {config.OUTPUT_DIR / 'showcase_report.png'}")
     log("showcase", "complete", str(report) if report else "")
     return None, data
 
