@@ -39,6 +39,24 @@ Hotkeys
   * F8 — same as MMB. Useful when you can't middle-click (laptops
     without a real third button).
 
+Multi-select with Ctrl
+----------------------
+Hold Ctrl and middle-click a series of elements. Each press is
+captured into a group buffer, with a one-line `[group] +N` confirm
+on the terminal. No per-element name prompt while Ctrl is held.
+Release Ctrl and the inspector prompts once for the group's name;
+the session block then emits a list literal:
+
+    DIGIT_BUTTONS = [
+        "0.0.0.0.1",   # ButtonControl "One"
+        "0.0.0.0.2",   # ButtonControl "Two"
+        "0.0.0.0.3",   # ButtonControl "Three"
+    ]
+
+Pairs naturally with `each` and `sequence` — those verbs take a
+list of ids as their second argument, so a Ctrl-captured group
+drops straight in: `each(click, window.calc, DIGIT_BUTTONS)`.
+
 Multi-app support
 -----------------
 The inspector no longer locks to a single process. Every window the
@@ -130,6 +148,14 @@ _stems_seen = {}
 # HWNDs the user declined to save as a known popup. Subsequent presses
 # in such an HWND are dropped silently rather than re-prompting.
 _skip_popup_hwnds = set()
+
+# Ctrl+middle-click multi-select. While Ctrl is held, MMB presses
+# accumulate into `_group_buffer` instead of opening individual name
+# prompts. On Ctrl release the buffer is committed as one list-valued
+# capture: `GROUP_NAME = ["id_a", "id_b", ...]` in the session block.
+_ctrl_held = False
+_group_buffer = []          # list of element-info dicts
+_group_counter = 0          # for default name suggestions
 
 _last_committed = None
 _pending_name = None
@@ -1025,28 +1051,37 @@ def _finalize_prompt():
 
     commit["final_name"] = final
 
-    # Rename the screenshot file to match the final element name so
-    # recovery mode can locate it.
-    old_path = commit.get("screenshot_path")
-    if old_path is not None and old_path != _screenshot_path(
-        window_name, final, commit["struct_id"]
-    ):
-        new_path = _screenshot_path(window_name, final, commit["struct_id"])
-        try:
-            # The screenshot worker may not have flushed yet — wait briefly.
-            for _ in range(20):
+    if commit.get("kind") == "group":
+        # Group commit: no per-commit screenshot to rename (each
+        # member already has its own struct-id-named file). The
+        # snippet is a multi-line list assignment; sidecar shows it
+        # as such for the audit trail.
+        members = commit["members"]
+        ids = ", ".join(f'"{m["struct_id"]}"' for m in members)
+        snippet = f"{final} = [{ids}]"
+    else:
+        # Rename the screenshot file to match the final element name so
+        # recovery mode can locate it.
+        old_path = commit.get("screenshot_path")
+        if old_path is not None and old_path != _screenshot_path(
+            window_name, final, commit["struct_id"]
+        ):
+            new_path = _screenshot_path(window_name, final, commit["struct_id"])
+            try:
+                # The screenshot worker may not have flushed yet — wait briefly.
+                for _ in range(20):
+                    if old_path.exists():
+                        break
+                    time.sleep(0.05)
                 if old_path.exists():
-                    break
-                time.sleep(0.05)
-            if old_path.exists():
-                new_path.parent.mkdir(parents=True, exist_ok=True)
-                old_path.replace(new_path)
-                commit["screenshot_path"] = new_path
-        except Exception:
-            pass
+                    new_path.parent.mkdir(parents=True, exist_ok=True)
+                    old_path.replace(new_path)
+                    commit["screenshot_path"] = new_path
+            except Exception:
+                pass
 
-    label = _readable_label(commit)
-    snippet = f'{final} = "{commit["struct_id"]}"  # {label}'
+        label = _readable_label(commit)
+        snippet = f'{final} = "{commit["struct_id"]}"  # {label}'
 
     # Sidecar file is a quiet audit trail — kept so a crashed session
     # doesn't lose captures. Per-step clipboard copy was removed: the
@@ -1131,13 +1166,83 @@ def _poll_during_prompt():
 
 
 def _dispatch_event(item):
-    """Route a queued event. Plain (x, y) tuples are click captures;
-    a 1-tuple ("color_sample_via_snip",) triggers the Snipping Tool
-    colour sampler."""
-    if isinstance(item, tuple) and item and item[0] == "color_sample_via_snip":
-        _handle_color_sample()
-        return
+    """Route a queued event. Plain (x, y) tuples are solo click
+    captures. Tagged tuples carry their own handlers."""
+    if isinstance(item, tuple) and item and isinstance(item[0], str):
+        tag = item[0]
+        if tag == "color_sample_via_snip":
+            _handle_color_sample()
+            return
+        if tag == "group_click":
+            _, x, y = item
+            _handle_group_click(x, y)
+            return
+        if tag == "finalize_group":
+            _finalize_group()
+            return
     _handle_press(*item)
+
+
+def _handle_group_click(x, y):
+    """Append the element under the cursor to the current Ctrl-group
+    buffer. Skips name prompt — the buffer is named once on Ctrl
+    release. Same-element repeats are de-duped against the last entry
+    so an accidental double-press doesn't add the same id twice."""
+    info = _gather_element_info(x, y)
+    if info is None:
+        return
+    if _group_buffer:
+        last = _group_buffer[-1]
+        if (last.get("struct_id") == info.get("struct_id")
+                and last.get("window_name") == info.get("window_name")):
+            _emit(f"[group] (skipped duplicate {info['struct_id']!r})")
+            return
+    cx, cy = info["bbox_center"]
+    if cx is not None and cy is not None:
+        _move_cursor(cx, cy)
+    # Save a per-element screenshot named by struct_id; we don't have
+    # a final name yet so we use the struct_id-based default.
+    _save_step_screenshot(info["bbox"], info.get("window_name", ""),
+                          None, info["struct_id"])
+    _group_buffer.append(info)
+    _emit(f'[group] +{len(_group_buffer)}: "{info["struct_id"]}" '
+          f'({info["control_type"]} "{info["name"]}")')
+
+
+def _finalize_group():
+    """Snapshot the group buffer into a list-valued capture and open
+    the name prompt. The prompt's commit dict carries `kind="group"`
+    and a `members` list; `_finalize_prompt` and `_render_group`
+    branch on that to emit `NAME = [...]` rather than `NAME = "..."`.
+    """
+    global _pending_name, _group_counter
+    if not _group_buffer:
+        return
+    members = list(_group_buffer)
+    _group_buffer.clear()
+    _group_counter += 1
+
+    window_name = members[0].get("window_name", "")
+    window_prefix = _sanitize_const(window_name) if window_name else ""
+    suggested = (f"{window_prefix}_GROUP_{_group_counter}"
+                 if window_prefix else f"GROUP_{_group_counter}")
+    _used_names.add(suggested)
+
+    commit = {
+        "kind": "group",
+        "window_name": window_name,
+        "members": [{
+            "struct_id": m["struct_id"],
+            "name": m.get("name", ""),
+            "control_type": m.get("control_type", ""),
+            "name_path": m.get("name_path", ""),
+        } for m in members],
+        "default_name": suggested,
+        "final_name": None,
+    }
+    _pending_name = {"buffer": "", "default": suggested, "commit": commit}
+    sys.stdout.write(f"group name [{suggested}]: ")
+    sys.stdout.flush()
 
 
 def _capture_via_snipping_tool(timeout=60.0):
@@ -1282,13 +1387,27 @@ def _worker():
 # --- Listeners --------------------------------------------------------------
 
 
+_CTRL_KEYS = (
+    getattr(keyboard.Key, "ctrl", None),
+    getattr(keyboard.Key, "ctrl_l", None),
+    getattr(keyboard.Key, "ctrl_r", None),
+)
+
+
 def _on_click(x, y, button, pressed):
     if not pressed or button != mouse.Button.middle:
         return
-    _events.put((x, y))
+    if _ctrl_held:
+        _events.put(("group_click", x, y))
+    else:
+        _events.put((x, y))
 
 
 def _on_key_press(key):
+    global _ctrl_held
+    if key in _CTRL_KEYS:
+        _ctrl_held = True
+        return
     if key == keyboard.Key.f2:
         # Trigger the Windows Snipping Tool (Win+Shift+S). The user
         # drags a region in Windows' native overlay; the resulting
@@ -1300,7 +1419,20 @@ def _on_key_press(key):
             x, y = _get_cursor_pos()
         except Exception:
             return
-        _events.put((x, y))
+        if _ctrl_held:
+            _events.put(("group_click", x, y))
+        else:
+            _events.put((x, y))
+
+
+def _on_key_release(key):
+    global _ctrl_held
+    if key in _CTRL_KEYS:
+        _ctrl_held = False
+        # Ctrl up — close the group if anything was captured while it
+        # was held. Empty release is a no-op.
+        if _group_buffer:
+            _events.put(("finalize_group",))
 
 
 # --- Session lifecycle ------------------------------------------------------
@@ -1337,11 +1469,18 @@ def _build_session_block():
     def _render_group(window, caps):
         if window:
             lines.append(f"# --- {window} ---")
-        if caps:
-            width = max(len(c["final_name"]) for c in caps if c.get("final_name"))
+        # Width is computed across single captures only — group
+        # captures span their own multi-line block, so they don't
+        # share the column with `NAME = "id"  # label` lines.
+        singles = [c for c in caps if c.get("kind") != "group"
+                   and c.get("final_name")]
+        width = max((len(c["final_name"]) for c in singles), default=0)
         for cap in caps:
             final = cap.get("final_name")
             if not final:
+                continue
+            if cap.get("kind") == "group":
+                _render_group_capture(cap)
                 continue
             label = _readable_label(cap)
             web_selector = cap.get("web_selector")
@@ -1359,6 +1498,33 @@ def _build_session_block():
                 # Native capture — struct_id as today.
                 lines.append(f'{final:<{width}} = "{cap["struct_id"]}"  # {label}')
         lines.append("")
+
+    def _render_group_capture(cap):
+        """Render a Ctrl+click multi-select capture as a list literal:
+
+            GROUP_NAME = [
+                "0.0.0",   # Save
+                "0.0.1",   # Cancel
+            ]
+
+        Members keep their per-element struct_id and a short label so
+        the array is self-documenting in the user's source file.
+        """
+        final = cap["final_name"]
+        members = cap["members"]
+        lines.append(f"{final} = [")
+        # Width over the quoted struct_id strings so the comments line up.
+        id_width = max(len(f'"{m["struct_id"]}",') for m in members)
+        for m in members:
+            quoted = f'"{m["struct_id"]}",'
+            label_bits = []
+            if m.get("control_type"):
+                label_bits.append(m["control_type"])
+            if m.get("name"):
+                label_bits.append(f'"{m["name"]}"')
+            label = " ".join(label_bits) if label_bits else m["struct_id"]
+            lines.append(f"    {quoted:<{id_width}}  # {label}")
+        lines.append("]")
 
     if unbound:
         _render_group("", unbound)
@@ -1447,6 +1613,8 @@ def run(scope=None):
     print("Inspector running (multi-app mode).")
     print("  Hover over an element + press MMB or F8 -> COMMIT.")
     print("  Press again on same element (or descendant) -> full info dump.")
+    print("  Hold Ctrl + MMB across many elements -> group capture "
+          "as NAME = [...].")
     print("  F2 -> colour sampler: opens Win+Shift+S; drag a snip, "
           "get the top colours.")
     print("  Inspect across multiple apps freely; APPS dict generated at end.")
@@ -1461,7 +1629,9 @@ def run(scope=None):
         worker_thread.start()
 
         mouse_listener = mouse.Listener(on_click=_on_click)
-        keyboard_listener = keyboard.Listener(on_press=_on_key_press)
+        keyboard_listener = keyboard.Listener(
+            on_press=_on_key_press, on_release=_on_key_release,
+        )
         mouse_listener.start()
         keyboard_listener.start()
 

@@ -65,6 +65,9 @@ def _reset_state():
     inspector._window_by_hwnd.clear()
     inspector._stems_seen.clear()
     inspector._skip_popup_hwnds.clear()
+    inspector._group_buffer.clear()
+    inspector._ctrl_held = False
+    inspector._group_counter = 0
     inspector._step_counter = 0
     inspector._log_file = None
     inspector._snippets_file = None
@@ -1824,6 +1827,106 @@ class TestRecoveryFlow(unittest.TestCase):
             inspector._recover()
         block = mp.copy.call_args[0][0]
         self.assertIn('NOTEPAD_FILE = "0.2.0"', block)
+
+
+class TestCtrlGroupCapture(unittest.TestCase):
+    """Ctrl+middle-click multi-select: clicks accumulate into
+    `_group_buffer`; Ctrl release fires `_finalize_group`, which sets
+    a group commit on `_pending_name`. `_finalize_prompt` then writes
+    the commit into `_captures` with kind="group" and a members list."""
+
+    def setUp(self):
+        _reset_state()
+        self.stdout_patcher = mock.patch.object(
+            inspector.sys, "stdout", new=io.StringIO(),
+        )
+        self.stdout_patcher.start()
+
+    def tearDown(self):
+        self.stdout_patcher.stop()
+        _reset_state()
+
+    def _make_info(self, struct_id, name="X", control_type="ButtonControl"):
+        return {
+            "struct_id": struct_id,
+            "name_path": f"App:WindowControl/{name}:{control_type}",
+            "name": name,
+            "control_type": control_type,
+            "class_name": "AcmeBtn",
+            "automation_id": "x_btn",
+            "bbox": (10, 20, 30, 40),
+            "bbox_center": (20, 30),
+            "color": (50, 50, 50),
+            "color_reason": None,
+            "toggle_state": None,
+            "window_name": "calc",
+            "runtime_id": (1, 2),
+            "web_capture": False,
+            "web_selector": None,
+            "interactable_ancestor": None,
+        }
+
+    def test_group_click_appends_to_buffer(self):
+        inspector._windows["calc"] = {
+            "hwnd": 100, "is_app": True, "spec": "calc.exe",
+            "title_hint": "", "fingerprint": None, "first_seen_idx": 0,
+        }
+        with mock.patch.object(inspector, "_gather_element_info",
+                               side_effect=[self._make_info("0.0.0.0.1", "One"),
+                                            self._make_info("0.0.0.0.2", "Two")]), \
+             mock.patch.object(inspector, "_move_cursor"), \
+             mock.patch.object(inspector, "_save_step_screenshot"):
+            inspector._handle_group_click(20, 30)
+            inspector._handle_group_click(40, 50)
+        self.assertEqual(len(inspector._group_buffer), 2)
+        self.assertEqual(inspector._group_buffer[0]["struct_id"], "0.0.0.0.1")
+        self.assertEqual(inspector._group_buffer[1]["struct_id"], "0.0.0.0.2")
+
+    def test_finalize_group_creates_pending_name_with_kind(self):
+        inspector._group_buffer.append(self._make_info("0.0.0.0.1", "One"))
+        inspector._group_buffer.append(self._make_info("0.0.0.0.2", "Two"))
+        inspector._finalize_group()
+        self.assertIsNotNone(inspector._pending_name)
+        commit = inspector._pending_name["commit"]
+        self.assertEqual(commit["kind"], "group")
+        self.assertEqual([m["struct_id"] for m in commit["members"]],
+                         ["0.0.0.0.1", "0.0.0.0.2"])
+        self.assertEqual(inspector._pending_name["default"], "CALC_GROUP_1")
+        # Buffer cleared once snapshotted.
+        self.assertEqual(inspector._group_buffer, [])
+
+    def test_finalize_prompt_appends_group_to_captures(self):
+        inspector._group_buffer.append(self._make_info("0.0.0.0.1", "One"))
+        inspector._group_buffer.append(self._make_info("0.0.0.0.2", "Two"))
+        inspector._finalize_group()
+        # Simulate user typing a name and pressing Enter.
+        inspector._pending_name["buffer"] = "DIGIT_BUTTONS"
+        inspector._finalize_prompt()
+        self.assertEqual(len(inspector._captures), 1)
+        cap = inspector._captures[0]
+        self.assertEqual(cap["kind"], "group")
+        self.assertEqual(cap["final_name"], "DIGIT_BUTTONS")
+        self.assertEqual([m["struct_id"] for m in cap["members"]],
+                         ["0.0.0.0.1", "0.0.0.0.2"])
+
+    def test_session_block_renders_group_as_list_literal(self):
+        inspector._windows["calc"] = {
+            "hwnd": 100, "is_app": True, "spec": "calc.exe",
+            "title_hint": "", "fingerprint": None, "first_seen_idx": 0,
+        }
+        inspector._group_buffer.append(self._make_info("0.0.0.0.1", "One"))
+        inspector._group_buffer.append(self._make_info("0.0.0.0.2", "Two"))
+        inspector._finalize_group()
+        inspector._pending_name["buffer"] = "DIGIT_BUTTONS"
+        inspector._finalize_prompt()
+        block = inspector._build_session_block()
+        # The list literal block.
+        self.assertIn("DIGIT_BUTTONS = [", block)
+        self.assertIn('"0.0.0.0.1",', block)
+        self.assertIn('"0.0.0.0.2",', block)
+        self.assertIn("]", block)
+        # And under the right window header.
+        self.assertIn("# --- calc ---", block)
 
 
 if __name__ == "__main__":
