@@ -164,6 +164,15 @@ _used_names = set()
 
 _events: "queue.Queue[tuple[int, int] | None]" = queue.Queue()
 
+# Cursor-snap fast path. Every click is enqueued on both `_events`
+# (the main worker, which does the slow gather + name prompt) and
+# `_snap_events` (a dedicated worker that only does ControlFromPoint
+# + BoundingRectangle + SetCursorPos). The snap worker races ahead
+# of the main worker so click N+1's cursor feedback is not blocked
+# by click N's full gather, and there's no backward-flicker from a
+# late snap inside _commit.
+_snap_events: "queue.Queue[tuple[int, int] | None]" = queue.Queue()
+
 
 _NON_INTERACTABLE = {
     "TextControl", "GroupControl", "PaneControl", "ImageControl",
@@ -1006,9 +1015,10 @@ def _commit(info):
     )
     _used_names.add(suggested)
 
-    cx, cy = info["bbox_center"]
-    if cx is not None and cy is not None:
-        _move_cursor(cx, cy)
+    # Cursor snap is handled by the dedicated snap thread on click;
+    # snapping again here would risk a backward-flicker if the user
+    # has already clicked the next element while this one is still
+    # being committed.
 
     screenshot_path = _save_step_screenshot(
         info["bbox"], window_name, suggested, info["struct_id"],
@@ -1129,9 +1139,8 @@ def _finalize_prompt():
 
 
 def _handle_press(x, y):
-    # Snap the cursor first so the user sees feedback within ~80ms
-    # instead of waiting for the full tree walk to complete.
-    _quick_snap_cursor(x, y)
+    # Cursor snap is handled by the dedicated snap thread (queued
+    # from _on_click); the main worker just does the slow gather.
     info = _gather_element_info(x, y)
     if info is None:
         return
@@ -1214,8 +1223,7 @@ def _handle_group_click(x, y):
     buffer. Skips name prompt — the buffer is named once on Ctrl
     release. Same-element repeats are de-duped against the last entry
     so an accidental double-press doesn't add the same id twice."""
-    # Same instant-feedback hoist as solo presses.
-    _quick_snap_cursor(x, y)
+    # Cursor snap is handled by the dedicated snap thread.
     info = _gather_element_info(x, y)
     if info is None:
         return
@@ -1225,9 +1233,6 @@ def _handle_group_click(x, y):
                 and last.get("window_name") == info.get("window_name")):
             _emit(f"[group] (skipped duplicate {info['struct_id']!r})")
             return
-    cx, cy = info["bbox_center"]
-    if cx is not None and cy is not None:
-        _move_cursor(cx, cy)
     # Save a per-element screenshot named by struct_id; we don't have
     # a final name yet so we use the struct_id-based default.
     _save_step_screenshot(info["bbox"], info.get("window_name", ""),
@@ -1412,6 +1417,40 @@ def _worker():
                       f"{type(e).__name__}: {e}")
 
 
+def _snap_worker():
+    """Dedicated cursor-snap worker. Initializes UIA in its own COM
+    apartment and processes only `_snap_events` — pure hit-test +
+    SetCursorPos, no tree walks or prompts. Runs in parallel with
+    the main worker so click N+1's snap is not blocked by click N's
+    slow gather. Drains coalesce: if multiple snaps stack up, only
+    the most recent matters (the cursor is going to settle there
+    anyway), so we skip stale events when we're behind."""
+    with auto.UIAutomationInitializerInThread(debug=False):
+        auto.GetRootControl()
+        while True:
+            item = _snap_events.get()
+            if item is None:
+                return
+            # Coalesce: if more snap events are already queued, skip
+            # to the latest. The cursor only needs to land on the
+            # newest target.
+            while True:
+                try:
+                    nxt = _snap_events.get_nowait()
+                except queue.Empty:
+                    break
+                if nxt is None:
+                    _snap_events.put(None)  # propagate shutdown
+                    return
+                item = nxt
+            try:
+                x, y = item
+                _quick_snap_cursor(x, y)
+            except Exception as e:
+                print(f"inspector snap worker recovered from: "
+                      f"{type(e).__name__}: {e}")
+
+
 # --- Listeners --------------------------------------------------------------
 
 
@@ -1425,6 +1464,10 @@ _CTRL_KEYS = (
 def _on_click(x, y, button, pressed):
     if not pressed or button != mouse.Button.middle:
         return
+    # Snap immediately on the dedicated snap thread — the main worker
+    # may be busy finishing the previous click's gather, and we don't
+    # want cursor feedback to wait for that.
+    _snap_events.put((x, y))
     if _ctrl_held:
         _events.put(("group_click", x, y))
     else:
@@ -1447,6 +1490,7 @@ def _on_key_press(key):
             x, y = _get_cursor_pos()
         except Exception:
             return
+        _snap_events.put((x, y))
         if _ctrl_held:
             _events.put(("group_click", x, y))
         else:
@@ -1655,6 +1699,8 @@ def run(scope=None):
 
         worker_thread = threading.Thread(target=_worker, daemon=True)
         worker_thread.start()
+        snap_thread = threading.Thread(target=_snap_worker, daemon=True)
+        snap_thread.start()
 
         mouse_listener = mouse.Listener(on_click=_on_click)
         keyboard_listener = keyboard.Listener(
@@ -1677,7 +1723,9 @@ def run(scope=None):
             except Exception:
                 pass
             _events.put(None)
+            _snap_events.put(None)
             worker_thread.join(timeout=2)
+            snap_thread.join(timeout=2)
             _emit_session_end()
             _log_file = None
 
