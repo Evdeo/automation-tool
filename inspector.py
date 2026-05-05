@@ -667,6 +667,29 @@ def _move_cursor(x, y):
         pass
 
 
+def _quick_snap_cursor(x, y):
+    """Snap the cursor to the centre of the control under (x, y) as
+    early as possible. Runs at the top of click handlers so the user
+    sees instant visual feedback (~80ms) rather than waiting for
+    `_gather_element_info` to finish the full tree walk (~400ms).
+    Cheap: one `ControlFromPoint` + one `BoundingRectangle` read +
+    one `SetCursorPos`. The slower gather still runs after, and its
+    own snap (in `_commit` / `_handle_group_click`) becomes a no-op
+    correction that handles the rare case where `_path_to_chain`
+    resolves to a different leaf than `ControlFromPoint`."""
+    try:
+        ctrl = auto.ControlFromPoint(int(x), int(y))
+        if ctrl is None:
+            return
+        r = ctrl.BoundingRectangle
+        if r.right - r.left > 0 and r.bottom - r.top > 0:
+            cx = (r.left + r.right) // 2
+            cy = (r.top + r.bottom) // 2
+            _move_cursor(cx, cy)
+    except Exception:
+        pass
+
+
 def _get_cursor_pos():
     pt = ctypes.wintypes.POINT()
     ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
@@ -1106,6 +1129,9 @@ def _finalize_prompt():
 
 
 def _handle_press(x, y):
+    # Snap the cursor first so the user sees feedback within ~80ms
+    # instead of waiting for the full tree walk to complete.
+    _quick_snap_cursor(x, y)
     info = _gather_element_info(x, y)
     if info is None:
         return
@@ -1188,6 +1214,8 @@ def _handle_group_click(x, y):
     buffer. Skips name prompt — the buffer is named once on Ctrl
     release. Same-element repeats are de-duped against the last entry
     so an accidental double-press doesn't add the same id twice."""
+    # Same instant-feedback hoist as solo presses.
+    _quick_snap_cursor(x, y)
     info = _gather_element_info(x, y)
     if info is None:
         return
