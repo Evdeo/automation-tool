@@ -28,12 +28,14 @@ Each press is interpreted as either a COMMIT or an INFO dump:
 
 Hotkeys
 -------
-  * F2 — colour sampler. Press F2, then click-and-drag the LEFT mouse
-    button across any region of the screen. On release the inspector
-    screenshots the rectangle, buckets each channel to the nearest 16,
-    and prints the top 20 colours sorted by pixel count. Useful for
-    surveying a palette before deciding which `is_color` / `is_color_area`
-    target to assert against.
+  * F2 — colour sampler. Press F2 to fire Windows' built-in Snipping
+    Tool (Win+Shift+S); drag any region in Windows' native overlay
+    and release. The inspector reads the snip from the clipboard,
+    buckets each channel to the nearest 16, and prints the top 20
+    colours sorted by pixel count. A reference PNG with fat colour
+    swatches is saved alongside. Useful for surveying a palette
+    before deciding which `is_color` / `is_color_area` target to
+    assert against. Press Esc in the snip overlay to cancel.
   * F8 — same as MMB. Useful when you can't middle-click (laptops
     without a real third button).
 
@@ -128,11 +130,6 @@ _stems_seen = {}
 # HWNDs the user declined to save as a known popup. Subsequent presses
 # in such an HWND are dropped silently rather than re-prompting.
 _skip_popup_hwnds = set()
-
-# F2 colour-sampler state. None = idle. "armed" after F2 press, waiting
-# for left-button-down. (x, y) tuple between left-down and left-up,
-# meaning we've recorded the drag start. Reset to None on completion.
-_color_sample_state = None
 
 _last_committed = None
 _pending_name = None
@@ -1094,41 +1091,65 @@ def _poll_during_prompt():
 
 def _dispatch_event(item):
     """Route a queued event. Plain (x, y) tuples are click captures;
-    a 3-tuple beginning with "color_sample" is a drag-region sample."""
-    if isinstance(item, tuple) and len(item) == 3 and item[0] == "color_sample":
-        _, start, end = item
-        _handle_color_sample(start, end)
+    a 1-tuple ("color_sample_via_snip",) triggers the Snipping Tool
+    colour sampler."""
+    if isinstance(item, tuple) and item and item[0] == "color_sample_via_snip":
+        _handle_color_sample()
         return
     _handle_press(*item)
 
 
-def _handle_color_sample(start, end):
-    """F2 sampler: screenshot the rectangle from `start` to `end`,
-    bucket each channel to the nearest 16, print the most common
-    colours by pixel count, and save a PNG reference card with one
-    fat swatch per colour for easy visual matching."""
+def _capture_via_snipping_tool(timeout=60.0):
+    """Fire Win+Shift+S, then poll the clipboard for a new image.
+    Returns a PIL Image, or None if the user cancelled (Esc) or the
+    deadline passed before anything landed on the clipboard.
+
+    Detects "new" via GetClipboardSequenceNumber so a stale image
+    sitting on the clipboard from before the call doesn't get picked
+    up by mistake."""
+    from PIL import ImageGrab
+    seq_before = ctypes.windll.user32.GetClipboardSequenceNumber()
+    pyautogui.hotkey("win", "shift", "s")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.3)
+        seq_now = ctypes.windll.user32.GetClipboardSequenceNumber()
+        if seq_now == seq_before:
+            continue
+        try:
+            img = ImageGrab.grabclipboard()
+        except Exception:
+            return None
+        if hasattr(img, "size"):
+            return img
+        # Sequence advanced but the new content isn't an image (e.g.,
+        # the user copied text in another window). Refresh baseline
+        # and keep waiting.
+        seq_before = seq_now
+    return None
+
+
+def _handle_color_sample():
+    """F2 sampler: trigger Win+Shift+S, wait for the snip on the
+    clipboard, bucket each channel to the nearest 16, print the most
+    common colours by pixel count, and save a PNG reference card with
+    one fat swatch per colour for easy visual matching."""
     import numpy as np
-    x0, y0 = start
-    x1, y1 = end
-    left, right = sorted([x0, x1])
-    top, bottom = sorted([y0, y1])
-    w, h = right - left, bottom - top
-    if w < 4 or h < 4:
-        _emit("[color-sample] selection too small, ignored.")
+    _emit("[color-sample] Snipping Tool armed — drag a region, "
+          "release to sample (Esc to cancel).")
+    img = _capture_via_snipping_tool()
+    if img is None:
+        _emit("[color-sample] cancelled or timed out; nothing sampled.")
         return
-    try:
-        img = pyautogui.screenshot(region=(left, top, w, h))
-    except Exception as e:
-        _emit(f"[color-sample] screenshot failed: {e}")
-        return
+    w, h = img.size
     arr = np.asarray(img)[..., :3]
     bucketed = (arr // 16) * 16
     flat = bucketed.reshape(-1, 3)
     pixels, counts = np.unique(flat, axis=0, return_counts=True)
     order = np.argsort(-counts)
     total = int(counts.sum())
-    _emit(f"\n[color-sample] {w}x{h} region at ({left},{top}); "
-          f"{total} px scanned; top colours (bucketed by 16):")
+    _emit(f"\n[color-sample] {w}x{h} snip; {total} px scanned; "
+          f"top colours (bucketed by 16):")
     rows = []
     for idx in order[:20]:
         r, g, b = (int(v) for v in pixels[idx])
@@ -1217,30 +1238,17 @@ def _worker():
 
 
 def _on_click(x, y, button, pressed):
-    global _color_sample_state
-    # F2 colour-sampler: drag the left mouse button to select a region.
-    if button == mouse.Button.left and _color_sample_state is not None:
-        if pressed and _color_sample_state == "armed":
-            _color_sample_state = (x, y)
-            return
-        if not pressed and isinstance(_color_sample_state, tuple):
-            start = _color_sample_state
-            _color_sample_state = None
-            _events.put(("color_sample", start, (x, y)))
-            return
     if not pressed or button != mouse.Button.middle:
         return
     _events.put((x, y))
 
 
 def _on_key_press(key):
-    global _color_sample_state
     if key == keyboard.Key.f2:
-        if _color_sample_state is not None:
-            return
-        _color_sample_state = "armed"
-        _emit("[color-sample] click-and-drag with left mouse button "
-              "to select a region; release to sample.")
+        # Trigger the Windows Snipping Tool (Win+Shift+S). The user
+        # drags a region in Windows' native overlay; the resulting
+        # snip lands on the clipboard, which the worker polls for.
+        _events.put(("color_sample_via_snip",))
         return
     if key == keyboard.Key.f8:
         try:
@@ -1394,7 +1402,8 @@ def run(scope=None):
     print("Inspector running (multi-app mode).")
     print("  Hover over an element + press MMB or F8 -> COMMIT.")
     print("  Press again on same element (or descendant) -> full info dump.")
-    print("  F2 -> colour sampler: drag a rectangle, get the top colours.")
+    print("  F2 -> colour sampler: opens Win+Shift+S; drag a snip, "
+          "get the top colours.")
     print("  Inspect across multiple apps freely; APPS dict generated at end.")
     print("  Ctrl+C to end and copy all captures to clipboard.")
     print(f"Session log    : {_LOG_PATH}")
