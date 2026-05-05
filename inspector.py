@@ -647,6 +647,35 @@ def _get_cursor_pos():
     return pt.x, pt.y
 
 
+# GetPixel returns DWORD COLORREF; explicit restype keeps signed-int
+# overflow from masking the high byte on the Python side.
+ctypes.windll.gdi32.GetPixel.restype = ctypes.c_uint32
+
+
+def _read_pixel(x, y):
+    """Read RGB at virtual-screen (x, y) via Win32 GDI. More reliable
+    than pyautogui.pixel — that function takes a fresh full-screen
+    PIL screenshot, which on multi-monitor setups only covers the
+    primary display and on per-monitor-DPI setups drifts vs. the
+    physical coords UIA returns. GetPixel queries the screen DC
+    directly, so neither problem applies. Returns (r, g, b) on
+    success, None on failure."""
+    user32 = ctypes.windll.user32
+    hdc = user32.GetDC(0)
+    if not hdc:
+        return None
+    try:
+        color_ref = ctypes.windll.gdi32.GetPixel(hdc, int(x), int(y))
+        if color_ref == 0xFFFFFFFF:  # CLR_INVALID
+            return None
+        # Win32 COLORREF byte order is 0x00BBGGRR.
+        return (color_ref & 0xFF,
+                (color_ref >> 8) & 0xFF,
+                (color_ref >> 16) & 0xFF)
+    finally:
+        user32.ReleaseDC(0, hdc)
+
+
 def _screenshot_path(window_name, suggested_name, struct_id):
     """Path under data/inspector_steps/<window>/. The element name is
     used so recovery mode can find the right screenshot by name later."""
@@ -749,6 +778,7 @@ def _gather_unsafe(x, y):
     bbox = None
     bbox_center = (None, None)
     color = None
+    color_reason = None
     try:
         r = leaf.BoundingRectangle
         if r.right - r.left > 0 and r.bottom - r.top > 0:
@@ -756,12 +786,13 @@ def _gather_unsafe(x, y):
             cx = (r.left + r.right) // 2
             cy = (r.top + r.bottom) // 2
             bbox_center = (cx, cy)
-            try:
-                color = tuple(pyautogui.pixel(cx, cy))
-            except Exception:
-                color = None
-    except Exception:
-        pass
+            color = _read_pixel(cx, cy)
+            if color is None:
+                color_reason = f"GetPixel({cx},{cy}) returned CLR_INVALID"
+        else:
+            color_reason = "control bbox is zero-size"
+    except Exception as e:
+        color_reason = f"BoundingRectangle raised: {type(e).__name__}: {e}"
 
     # UIA TogglePattern — present on checkboxes, radio buttons, switches,
     # and tri-state widgets. Surfacing it tells the user to reach for
@@ -788,6 +819,7 @@ def _gather_unsafe(x, y):
         "bbox": bbox,
         "bbox_center": bbox_center,
         "color": color,
+        "color_reason": color_reason,
         "toggle_state": toggle_state,
         "window_name": window_name,
         "runtime_id": _runtime_id(leaf),
@@ -800,9 +832,9 @@ def _gather_unsafe(x, y):
 # --- Print blocks -----------------------------------------------------------
 
 
-def _format_color(color):
+def _format_color(color, reason=None):
     if not color:
-        return "(unavailable)"
+        return f"(unavailable — {reason})" if reason else "(unavailable)"
     r, g, b = color
     return f"({r}, {g}, {b})  #{r:02x}{g:02x}{b:02x}"
 
@@ -825,7 +857,7 @@ def _emit_minimal(info):
         _emit(f'identifier   : (none — DevTools may help; struct_id will be emitted)')
     _emit(f'name         : "{info["name"]}"')
     _emit(f'control type : {info["control_type"]}')
-    _emit(f'color        : {_format_color(info["color"])}')
+    _emit(f'color        : {_format_color(info["color"], info.get("color_reason"))}')
     if info.get("toggle_state") is not None:
         _emit(f'checkbox     : {_format_toggle(info["toggle_state"])} '
               f'— use is_checked / set_checkbox')
@@ -855,7 +887,7 @@ def _emit_full(commit):
         cx, cy = commit["bbox_center"]
         _emit(f'  bbox         : ({l}, {t}) -> ({r}, {b})')
         _emit(f'  bbox center  : ({cx}, {cy})')
-    _emit(f'  color        : {_format_color(commit["color"])}')
+    _emit(f'  color        : {_format_color(commit["color"], commit.get("color_reason"))}')
     if commit.get("toggle_state") is not None:
         _emit(f'  checkbox     : {_format_toggle(commit["toggle_state"])}')
     _emit(f'  parent path  : {commit["name_path"]}')
