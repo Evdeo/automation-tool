@@ -14,15 +14,28 @@ Each press is interpreted as either a COMMIT or an INFO dump:
 
   * **First press on an element** = COMMIT. The cursor jumps to the
     bounding-rect center, minimal info is printed (struct_id, name,
-    control type, sampled center color). A red-rectangle screenshot is
-    saved under ``data/inspector_steps/<window>/<element>.png``. A name
-    prompt opens; press Enter for the suggested default, or type your
-    own name + Enter — your name is used verbatim, no prefix is added.
+    control type, sampled center color, plus a `checkbox: <state>`
+    line if the control exposes UIA's TogglePattern). A red-rectangle
+    screenshot is saved under
+    ``data/inspector_steps/<window>/<element>.png``. A name prompt
+    opens; press Enter for the suggested default, or type your own
+    name + Enter — your name is used verbatim, no prefix is added.
     The snippet is appended to ``data/inspector_snippets/session_<ts>.py``
     as a quiet audit trail; the clipboard is NOT touched per-step.
   * **Second press on the same element or a descendant** = INFO dump
     (full UIA properties). Doesn't commit again. The name prompt stays
     open if it was active.
+
+Hotkeys
+-------
+  * F2 — colour sampler. Press F2, then click-and-drag the LEFT mouse
+    button across any region of the screen. On release the inspector
+    screenshots the rectangle, buckets each channel to the nearest 16,
+    and prints the top 20 colours sorted by pixel count. Useful for
+    surveying a palette before deciding which `is_color` / `is_color_area`
+    target to assert against.
+  * F8 — same as MMB. Useful when you can't middle-click (laptops
+    without a real third button).
 
 Multi-app support
 -----------------
@@ -1324,6 +1337,7 @@ def run(scope=None):
     print("Inspector running (multi-app mode).")
     print("  Hover over an element + press MMB or F8 -> COMMIT.")
     print("  Press again on same element (or descendant) -> full info dump.")
+    print("  F2 -> colour sampler: drag a rectangle, get the top colours.")
     print("  Inspect across multiple apps freely; APPS dict generated at end.")
     print("  Ctrl+C to end and copy all captures to clipboard.")
     print(f"Session log    : {_LOG_PATH}")
