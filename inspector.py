@@ -752,6 +752,21 @@ def _gather_unsafe(x, y):
     except Exception:
         pass
 
+    # UIA TogglePattern — present on checkboxes, radio buttons, switches,
+    # and tri-state widgets. Surfacing it tells the user to reach for
+    # is_checked / set_checkbox instead of plain click.
+    toggle_state = None
+    try:
+        state = leaf.GetTogglePattern().ToggleState
+        if state == 1:
+            toggle_state = True
+        elif state == 0:
+            toggle_state = False
+        elif state == 2:
+            toggle_state = "indeterminate"
+    except Exception:
+        toggle_state = None
+
     return {
         "struct_id": struct_id,
         "name_path": name_path,
@@ -762,6 +777,7 @@ def _gather_unsafe(x, y):
         "bbox": bbox,
         "bbox_center": bbox_center,
         "color": color,
+        "toggle_state": toggle_state,
         "window_name": window_name,
         "runtime_id": _runtime_id(leaf),
         "web_capture": web_capture,
@@ -780,6 +796,14 @@ def _format_color(color):
     return f"({r}, {g}, {b})  #{r:02x}{g:02x}{b:02x}"
 
 
+def _format_toggle(state):
+    if state is True:
+        return "checked"
+    if state is False:
+        return "unchecked"
+    return str(state)  # "indeterminate" or other
+
+
 def _emit_minimal(info):
     _emit("-" * 60)
     _emit(f'window       : {info.get("window_name", "?")}')
@@ -791,6 +815,9 @@ def _emit_minimal(info):
     _emit(f'name         : "{info["name"]}"')
     _emit(f'control type : {info["control_type"]}')
     _emit(f'color        : {_format_color(info["color"])}')
+    if info.get("toggle_state") is not None:
+        _emit(f'checkbox     : {_format_toggle(info["toggle_state"])} '
+              f'— use is_checked / set_checkbox')
     if info["interactable_ancestor"]:
         anc = info["interactable_ancestor"]
         _emit(
@@ -818,6 +845,8 @@ def _emit_full(commit):
         _emit(f'  bbox         : ({l}, {t}) -> ({r}, {b})')
         _emit(f'  bbox center  : ({cx}, {cy})')
     _emit(f'  color        : {_format_color(commit["color"])}')
+    if commit.get("toggle_state") is not None:
+        _emit(f'  checkbox     : {_format_toggle(commit["toggle_state"])}')
     _emit(f'  parent path  : {commit["name_path"]}')
     if commit["interactable_ancestor"]:
         anc = commit["interactable_ancestor"]

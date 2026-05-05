@@ -1332,6 +1332,30 @@ class TestEmitFullInfo(unittest.TestCase):
         self.assertIn("ancestor", printed.lower())
         self.assertIn("Outer", printed)
 
+    def test_toggle_state_line_when_checkbox(self):
+        inspector._emit_full(self._commit(toggle_state=True))
+        printed = inspector.sys.stdout.getvalue()
+        self.assertIn("checkbox", printed)
+        self.assertIn("checked", printed)
+
+    def test_no_toggle_line_when_not_toggleable(self):
+        # Default fixture has no toggle_state key → no checkbox line.
+        inspector._emit_full(self._commit())
+        printed = inspector.sys.stdout.getvalue()
+        self.assertNotIn("checkbox", printed)
+
+
+class TestFormatToggle(unittest.TestCase):
+    def test_true_renders_checked(self):
+        self.assertEqual(inspector._format_toggle(True), "checked")
+
+    def test_false_renders_unchecked(self):
+        self.assertEqual(inspector._format_toggle(False), "unchecked")
+
+    def test_indeterminate_string_passes_through(self):
+        self.assertEqual(inspector._format_toggle("indeterminate"),
+                         "indeterminate")
+
 
 # --- Multi-app registration -------------------------------------------------
 
