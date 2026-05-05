@@ -218,9 +218,13 @@ def _hresult_name(exc):
 
 def _emit(line):
     try:
-        print(line)
+        # flush=True so Windows Terminal / cmd.exe in block-buffered
+        # mode shows output immediately instead of holding it until
+        # process exit (which would make a busy session feel frozen
+        # and dump everything at Ctrl+C).
+        print(line, flush=True)
     except UnicodeEncodeError:
-        print(line.encode("ascii", "replace").decode("ascii"))
+        print(line.encode("ascii", "replace").decode("ascii"), flush=True)
     if _log_file is not None:
         _log_file.write(line + "\n")
         _log_file.flush()
@@ -1406,7 +1410,7 @@ def _worker():
                 item = _events.get()
             except Exception as e:
                 print(f"inspector worker recovered from: "
-                      f"{type(e).__name__}: {e}")
+                      f"{type(e).__name__}: {e}", flush=True)
                 continue
             if item is None:
                 return
@@ -1414,7 +1418,7 @@ def _worker():
                 _dispatch_event(item)
             except Exception as e:
                 print(f"inspector worker recovered from: "
-                      f"{type(e).__name__}: {e}")
+                      f"{type(e).__name__}: {e}", flush=True)
 
 
 def _snap_worker():
@@ -1424,9 +1428,13 @@ def _snap_worker():
     the main worker so click N+1's snap is not blocked by click N's
     slow gather. Drains coalesce: if multiple snaps stack up, only
     the most recent matters (the cursor is going to settle there
-    anyway), so we skip stale events when we're behind."""
+    anyway), so we skip stale events when we're behind.
+
+    Skips the `auto.GetRootControl()` warm-up the main worker does
+    — the snap path uses ControlFromPoint, which doesn't need a
+    rooted UIA tree, and avoiding it removes one cross-thread COM
+    initialisation race when both workers start at once."""
     with auto.UIAutomationInitializerInThread(debug=False):
-        auto.GetRootControl()
         while True:
             item = _snap_events.get()
             if item is None:
@@ -1448,7 +1456,7 @@ def _snap_worker():
                 _quick_snap_cursor(x, y)
             except Exception as e:
                 print(f"inspector snap worker recovered from: "
-                      f"{type(e).__name__}: {e}")
+                      f"{type(e).__name__}: {e}", flush=True)
 
 
 # --- Listeners --------------------------------------------------------------
