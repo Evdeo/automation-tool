@@ -65,6 +65,7 @@ def _reset_state():
     inspector._window_by_hwnd.clear()
     inspector._stems_seen.clear()
     inspector._skip_popup_hwnds.clear()
+    inspector._color_sample_state = None
     inspector._step_counter = 0
     inspector._log_file = None
     inspector._snippets_file = None

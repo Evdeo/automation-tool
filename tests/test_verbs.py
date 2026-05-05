@@ -628,6 +628,85 @@ class TestColorVerbs(unittest.TestCase):
         mg.assert_called_once_with(self.win, "X", x_offset=2, y_offset=4)
 
 
+class TestIsColorArea(unittest.TestCase):
+    """`is_color_area` screenshots the control's bbox and returns True
+    if any pixel matches `rgb` within tolerance. `padding` shrinks the
+    inspected region by that percent on each side."""
+
+    def setUp(self):
+        self.win = _FakeWindow()
+
+    def _patch(self, bbox, pixels):
+        """Helper: patch _resolve to return an element with `bbox`,
+        and patch pyautogui.screenshot to return an array of `pixels`
+        (numpy-compatible iterable). Returns the screenshot mock."""
+        import numpy as np
+        elem = mock.MagicMock()
+        elem.BoundingRectangle = type(
+            "R", (), dict(zip("left top right bottom".split(), bbox)))()
+        # Return a fake PIL-like object whose np.asarray gives the array.
+        fake_img = mock.MagicMock()
+        arr = np.array(pixels, dtype=np.uint8)
+        # numpy.asarray on a MagicMock would fail, so make np.asarray
+        # see the underlying array.
+        fake_img.__array__ = lambda self=None, dtype=None: arr
+        return mock.patch.object(verbs.actions, "_resolve",
+                                 return_value=(elem, (0, 0))), \
+               mock.patch.object(verbs.apps, "bring_to_foreground"), \
+               mock.patch.object(verbs.pyautogui, "screenshot",
+                                 return_value=fake_img)
+
+    def test_match_anywhere_in_bbox(self):
+        # 2x2 area: only one pixel matches → still True.
+        pixels = [[[0, 0, 0], [255, 0, 0]],
+                  [[0, 0, 0], [0, 0, 0]]]
+        p1, p2, p3 = self._patch((10, 20, 12, 22), pixels)
+        with p1, p2, p3:
+            self.assertTrue(
+                verbs.is_color_area(self.win, "X", (255, 0, 0)),
+            )
+
+    def test_no_match_returns_false(self):
+        pixels = [[[10, 20, 30], [40, 50, 60]]]
+        p1, p2, p3 = self._patch((0, 0, 2, 1), pixels)
+        with p1, p2, p3:
+            self.assertFalse(
+                verbs.is_color_area(self.win, "X", (255, 0, 0)),
+            )
+
+    def test_tolerance_admits_near_match(self):
+        pixels = [[[250, 5, 5]]]
+        p1, p2, p3 = self._patch((0, 0, 1, 1), pixels)
+        with p1, p2, p3:
+            self.assertTrue(
+                verbs.is_color_area(self.win, "X", (255, 0, 0),
+                                    tolerance=10),
+            )
+            self.assertFalse(
+                verbs.is_color_area(self.win, "X", (255, 0, 0),
+                                    tolerance=2),
+            )
+
+    def test_padding_shrinks_region(self):
+        # 100x100 bbox, padding=10 → request a 80x80 region at (10, 10)
+        # offset from the bbox origin.
+        elem = mock.MagicMock()
+        elem.BoundingRectangle = type(
+            "R", (), {"left": 0, "top": 0, "right": 100, "bottom": 100})()
+        fake_img = mock.MagicMock()
+        import numpy as np
+        fake_img.__array__ = lambda self=None, dtype=None: np.zeros(
+            (80, 80, 3), dtype=np.uint8)
+        with mock.patch.object(verbs.actions, "_resolve",
+                               return_value=(elem, (0, 0))), \
+             mock.patch.object(verbs.apps, "bring_to_foreground"), \
+             mock.patch.object(verbs.pyautogui, "screenshot",
+                               return_value=fake_img) as mss:
+            verbs.is_color_area(self.win, "X", (0, 0, 0), padding=10)
+        # (left, top, w, h) = (10, 10, 80, 80)
+        mss.assert_called_once_with(region=(10, 10, 80, 80))
+
+
 # --- read_info --------------------------------------------------------------
 
 

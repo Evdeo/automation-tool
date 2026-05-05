@@ -115,6 +115,11 @@ _stems_seen = {}
 # in such an HWND are dropped silently rather than re-prompting.
 _skip_popup_hwnds = set()
 
+# F2 colour-sampler state. None = idle. "armed" after F2 press, waiting
+# for left-button-down. (x, y) tuple between left-down and left-up,
+# meaning we've recorded the drag start. Reset to None on completion.
+_color_sample_state = None
+
 _last_committed = None
 _pending_name = None
 _captures = []
@@ -1041,7 +1046,50 @@ def _poll_during_prompt():
         if item is None:
             _events.put(None)
             return
-        _handle_press(*item)
+        _dispatch_event(item)
+
+
+def _dispatch_event(item):
+    """Route a queued event. Plain (x, y) tuples are click captures;
+    a 3-tuple beginning with "color_sample" is a drag-region sample."""
+    if isinstance(item, tuple) and len(item) == 3 and item[0] == "color_sample":
+        _, start, end = item
+        _handle_color_sample(start, end)
+        return
+    _handle_press(*item)
+
+
+def _handle_color_sample(start, end):
+    """F2 sampler: screenshot the rectangle from `start` to `end`,
+    bucket each channel to the nearest 16, and print the most common
+    colours sorted by pixel count."""
+    import numpy as np
+    x0, y0 = start
+    x1, y1 = end
+    left, right = sorted([x0, x1])
+    top, bottom = sorted([y0, y1])
+    w, h = right - left, bottom - top
+    if w < 4 or h < 4:
+        _emit("[color-sample] selection too small, ignored.")
+        return
+    try:
+        img = pyautogui.screenshot(region=(left, top, w, h))
+    except Exception as e:
+        _emit(f"[color-sample] screenshot failed: {e}")
+        return
+    arr = np.asarray(img)[..., :3]
+    bucketed = (arr // 16) * 16
+    flat = bucketed.reshape(-1, 3)
+    pixels, counts = np.unique(flat, axis=0, return_counts=True)
+    order = np.argsort(-counts)
+    total = int(counts.sum())
+    _emit(f"\n[color-sample] {w}x{h} region at ({left},{top}); "
+          f"{total} px scanned; top colours (bucketed by 16):")
+    for idx in order[:20]:
+        r, g, b = (int(v) for v in pixels[idx])
+        c = int(counts[idx])
+        pct = 100.0 * c / total
+        _emit(f"  ({r:3}, {g:3}, {b:3})  {c:>7}  {pct:5.1f}%")
 
 
 def _worker():
@@ -1060,7 +1108,7 @@ def _worker():
             if item is None:
                 return
             try:
-                _handle_press(*item)
+                _dispatch_event(item)
             except Exception as e:
                 print(f"inspector worker recovered from: "
                       f"{type(e).__name__}: {e}")
@@ -1070,12 +1118,31 @@ def _worker():
 
 
 def _on_click(x, y, button, pressed):
+    global _color_sample_state
+    # F2 colour-sampler: drag the left mouse button to select a region.
+    if button == mouse.Button.left and _color_sample_state is not None:
+        if pressed and _color_sample_state == "armed":
+            _color_sample_state = (x, y)
+            return
+        if not pressed and isinstance(_color_sample_state, tuple):
+            start = _color_sample_state
+            _color_sample_state = None
+            _events.put(("color_sample", start, (x, y)))
+            return
     if not pressed or button != mouse.Button.middle:
         return
     _events.put((x, y))
 
 
 def _on_key_press(key):
+    global _color_sample_state
+    if key == keyboard.Key.f2:
+        if _color_sample_state is not None:
+            return
+        _color_sample_state = "armed"
+        _emit("[color-sample] click-and-drag with left mouse button "
+              "to select a region; release to sample.")
+        return
     if key == keyboard.Key.f8:
         try:
             x, y = _get_cursor_pos()

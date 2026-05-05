@@ -38,7 +38,11 @@ Text input:
 Snapshot checks (no waiting):
   is_visible(window, id) -> bool
   is_enabled(window, id) -> bool
-  is_color(window, id, rgb, tolerance=0) -> bool
+  is_color(window, id, rgb, tolerance=0) -> bool   centre pixel match
+  is_color_area(window, id, rgb, tolerance=0, padding=0) -> bool
+      True if ANY pixel in the control's bbox matches `rgb`. Use for
+      colored icons / dots / glyphs that don't sit at the centre.
+      `padding` (percent) trims each edge before scanning.
   check_color(window, id) -> (r, g, b)    sample center pixel
   read_info(window, id) -> dict           every UIA property
 

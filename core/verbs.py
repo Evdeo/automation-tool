@@ -521,6 +521,46 @@ def is_color(
     return all(abs(a - e) <= tolerance for a, e in zip(actual, rgb))
 
 
+def is_color_area(
+    window: Control,
+    control_id: str,
+    rgb: Tuple[int, int, int],
+    tolerance: int = 0,
+    padding: int = 0,
+) -> bool:
+    """True if ANY pixel inside `control_id`'s bounding box matches
+    `rgb` (within `tolerance` per channel). Use to detect a colored
+    icon, indicator dot, or text glyph anywhere inside a control —
+    `is_color` only checks the centre pixel, which often hits empty
+    background.
+
+    `padding` shrinks the inspected region by that percent on every
+    side (10 → cut 10% off each edge). Useful for skipping a
+    control's outer border when sampling the inner area.
+    """
+    import numpy as np
+    element, _ = actions._resolve(window, control_id)
+    r = element.BoundingRectangle
+    w = r.right - r.left
+    h = r.bottom - r.top
+    if w <= 0 or h <= 0:
+        return False
+    left, top = r.left, r.top
+    if padding:
+        dx = int(w * padding / 100)
+        dy = int(h * padding / 100)
+        left += dx
+        top += dy
+        w -= 2 * dx
+        h -= 2 * dy
+        if w <= 0 or h <= 0:
+            return False
+    apps.bring_to_foreground(window)
+    img = pyautogui.screenshot(region=(left, top, w, h))
+    arr = np.asarray(img)[..., :3].astype(int)
+    return bool((np.abs(arr - list(rgb)).max(-1) <= tolerance).any())
+
+
 def wait_visible(window: Control, control_id: str, timeout: float = 10) -> bool:
     return actions.is_present(window, control_id, timeout=timeout)
 
