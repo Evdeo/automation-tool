@@ -24,6 +24,10 @@ Clicks (return bool, take window first):
   click_after(window, id, delay)          sleep delay seconds, then click
   move(window, id)                        move cursor without clicking
   hold_and_drag(window, src_id, dst_id)   press src, drag to dst, release
+  set_checkbox(window, id, value=True, attempts=3) -> bool
+      Click the checkbox/toggle until is_checked == value. No-op if
+      already correct. Pairs with each(set_checkbox, ..., value=True)
+      to set many at once.
 
 Coord-based clicks (no UIA — for browser/Playwright targets):
   click_at(x, y) / move_at(x, y) / hold_and_drag_at(x1, y1, x2, y2)
@@ -43,6 +47,8 @@ Snapshot checks (no waiting):
       True if ANY pixel in the control's bbox matches `rgb`. Use for
       colored icons / dots / glyphs that don't sit at the centre.
       `padding` (percent) trims each edge before scanning.
+  is_checked(window, id) -> True | False | None
+      UIA TogglePattern state. None = indeterminate or not toggleable.
   check_color(window, id) -> (r, g, b)    sample center pixel
   read_info(window, id) -> dict           every UIA property
 

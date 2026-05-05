@@ -707,6 +707,91 @@ class TestIsColorArea(unittest.TestCase):
         mss.assert_called_once_with(region=(10, 10, 80, 80))
 
 
+class TestIsChecked(unittest.TestCase):
+    """`is_checked` reads UIA's TogglePattern. Returns True for state=1
+    (on), False for state=0 (off), None for state=2 (indeterminate)
+    or any control without a TogglePattern."""
+
+    def setUp(self):
+        self.win = _FakeWindow()
+
+    def _resolve_to(self, toggle_state):
+        elem = mock.MagicMock()
+        elem.GetTogglePattern.return_value.ToggleState = toggle_state
+        return mock.patch.object(verbs.actions, "_resolve",
+                                 return_value=(elem, (0, 0)))
+
+    def test_state_on_returns_true(self):
+        with self._resolve_to(1):
+            self.assertIs(verbs.is_checked(self.win, "X"), True)
+
+    def test_state_off_returns_false(self):
+        with self._resolve_to(0):
+            self.assertIs(verbs.is_checked(self.win, "X"), False)
+
+    def test_state_indeterminate_returns_none(self):
+        with self._resolve_to(2):
+            self.assertIsNone(verbs.is_checked(self.win, "X"))
+
+    def test_no_toggle_pattern_returns_none(self):
+        elem = mock.MagicMock()
+        elem.GetTogglePattern.side_effect = Exception("not toggleable")
+        with mock.patch.object(verbs.actions, "_resolve",
+                               return_value=(elem, (0, 0))):
+            self.assertIsNone(verbs.is_checked(self.win, "X"))
+
+
+class TestSetCheckbox(unittest.TestCase):
+    """`set_checkbox` clicks until `is_checked == value`. No-op when
+    already correct. Returns True on success, False if state didn't
+    change after `attempts` clicks."""
+
+    def setUp(self):
+        self.win = _FakeWindow()
+
+    def test_already_correct_no_clicks(self):
+        # is_checked → True, value=True → no click, return True.
+        with mock.patch.object(verbs, "is_checked", return_value=True), \
+             mock.patch.object(verbs.actions, "press") as mp, \
+             mock.patch.object(verbs._time, "sleep"):
+            result = verbs.set_checkbox(self.win, "X", value=True)
+        self.assertTrue(result)
+        mp.assert_not_called()
+
+    def test_one_click_to_flip(self):
+        # First read → False, click, second read → True.
+        with mock.patch.object(verbs, "is_checked",
+                               side_effect=[False, True]), \
+             mock.patch.object(verbs.actions, "press") as mp, \
+             mock.patch.object(verbs._time, "sleep"):
+            result = verbs.set_checkbox(self.win, "X", value=True)
+        self.assertTrue(result)
+        mp.assert_called_once_with(self.win, "X")
+
+    def test_returns_false_when_state_never_matches(self):
+        # is_checked stuck at None (e.g., not toggleable) — exhaust
+        # attempts and return False.
+        with mock.patch.object(verbs, "is_checked", return_value=None), \
+             mock.patch.object(verbs.actions, "press") as mp, \
+             mock.patch.object(verbs._time, "sleep"):
+            result = verbs.set_checkbox(self.win, "X", value=True,
+                                        attempts=2)
+        self.assertFalse(result)
+        # 0/None mismatch → click ; tries attempts+1 reads, attempts
+        # clicks before giving up.
+        self.assertEqual(mp.call_count, 2)
+
+    def test_set_to_false(self):
+        # value=False — click until is_checked == False.
+        with mock.patch.object(verbs, "is_checked",
+                               side_effect=[True, False]), \
+             mock.patch.object(verbs.actions, "press") as mp, \
+             mock.patch.object(verbs._time, "sleep"):
+            result = verbs.set_checkbox(self.win, "X", value=False)
+        self.assertTrue(result)
+        mp.assert_called_once_with(self.win, "X")
+
+
 # --- read_info --------------------------------------------------------------
 
 

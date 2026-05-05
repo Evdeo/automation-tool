@@ -573,6 +573,48 @@ def wait_gone(window: Control, control_id: str, timeout: float = 10) -> bool:
     return actions.wait_until_absent(window, control_id, timeout=timeout)
 
 
+def is_checked(window: Control, control_id: str):
+    """Read a toggleable control's state. Returns:
+      True  — the control is checked / on,
+      False — the control is unchecked / off,
+      None  — the control is indeterminate (tri-state mixed) OR is
+              not toggleable (no UIA TogglePattern).
+
+    Backed by UIA's TogglePattern, the canonical signal for checkboxes,
+    radio buttons, switches, and tri-state widgets.
+    """
+    element, _ = actions._resolve(window, control_id)
+    try:
+        state = element.GetTogglePattern().ToggleState
+    except Exception:
+        return None
+    if state == 1:
+        return True
+    if state == 0:
+        return False
+    return None
+
+
+@_action_verb
+def set_checkbox(window: Control, control_id: str, value: bool = True,
+                 attempts: int = 3) -> bool:
+    """Click the toggleable control until its checked state matches
+    `value` (True = checked, False = unchecked). No-op if already
+    correct. Returns True on success, False if the desired state
+    couldn't be reached after `attempts` clicks (e.g. the control
+    isn't toggleable or didn't respond).
+
+    Pair with `each` to set many checkboxes to the same value:
+        each(set_checkbox, window, [BOX_A, BOX_B, BOX_C], value=True)
+    """
+    for _ in range(attempts + 1):
+        if is_checked(window, control_id) == value:
+            return True
+        actions.press(window, control_id)
+        _time.sleep(0.1)
+    return False
+
+
 def check_color(
     window: Control, control_id: str, dx: int = 0, dy: int = 0
 ) -> Tuple[int, int, int]:
