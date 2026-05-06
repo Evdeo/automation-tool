@@ -10,6 +10,7 @@ sends keys to whatever currently has focus). Live windows live on the
 `window.close("calc")`, `window.get("notepad")`.
 """
 from core import runner, window
+from core.window import Target
 from core.verbs import (
     # clicks
     click,
@@ -72,5 +73,5 @@ __all__ = [
     "screenshot",
     "each", "sequence", "popup",
     "now", "wait", "log", "read_clipboard", "log_csv",
-    "runner", "window",
+    "runner", "window", "Target",
 ]

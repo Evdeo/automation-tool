@@ -28,10 +28,52 @@ import uiautomation as auto
 
 import config
 from core import actions, apps, db
+from core.window import Target
 
 
 Control = auto.Control
 PathArg = Union[str, PathLike]
+
+
+def _unpack(target, control_id=None):
+    """Normalize a verb's `(target, control_id)` head args.
+
+    Accepts either form:
+      - `Target("notepad", "0.0.0")` — looks up the live `Control` from
+        the window registry. The `control_id` arg, if any, is ignored.
+      - `(window_control, "0.0.0")` — passes through unchanged.
+
+    Returns `(Control, control_id)`. Used by the action-verb decorator
+    and by every non-decorated check/wait verb."""
+    if isinstance(target, Target):
+        from core import window as _window
+        return getattr(_window, target.window), target.id
+    return target, control_id
+
+
+def _unpack_extra(args, n_extra):
+    """Variant of `_unpack` for verbs that take additional positional
+    args after `(target, control_id)` (e.g. `is_color(.., rgb)`).
+
+    `args` is the verb's full positional tuple; `n_extra` is how many
+    positionals follow the control identifier. Returns
+    `(Control, control_id, *extra)`."""
+    if args and isinstance(args[0], Target):
+        target = args[0]
+        rest = args[1:]
+        if len(rest) != n_extra:
+            raise TypeError(
+                f"expected {n_extra} positional arg(s) after Target, "
+                f"got {len(rest)}"
+            )
+        from core import window as _window
+        return (getattr(_window, target.window), target.id, *rest)
+    if len(args) != 2 + n_extra:
+        raise TypeError(
+            f"expected {2 + n_extra} positional args (window, "
+            f"control_id, ...), got {len(args)}"
+        )
+    return args
 
 
 # --- Popup dismiss state ----------------------------------------------------
@@ -310,10 +352,22 @@ class no_dismiss:
 def _action_verb(fn):
     """Decorator for verbs that perform an OS action. Captures the
     HWND baseline (for `match("popup")`) and pre-dismisses any
-    unexpected popups before delegating."""
+    unexpected popups before delegating.
+
+    Also normalizes the leading argument: a `Target` is unpacked into
+    the live `Control` (looked up from the window registry) and its
+    id is prepended to `args`, so `click(EDITOR)` and
+    `click(window.notepad, EDITOR_ID)` both reach the inner function
+    as `(Control, control_id)`."""
 
     @_functools.wraps(fn)
-    def wrapper(window, *args, **kwargs):
+    def wrapper(target, *args, **kwargs):
+        if isinstance(target, Target):
+            from core import window as _window
+            window = getattr(_window, target.window)
+            args = (target.id, *args)
+        else:
+            window = target
         _capture_hwnd_baseline()
         _dismiss_unexpected_popups(window)
         return fn(window, *args, **kwargs)
@@ -380,14 +434,17 @@ def move(window: Control, control_id: str) -> bool:
 
 
 @_action_verb
-def hold_and_drag(window: Control, src_id: str, dst_id: str) -> bool:
+def hold_and_drag(window: Control, src_id: str, dst_id) -> bool:
     """Press at `src_id`'s center, drag to `dst_id`'s center, release.
 
     Use for sliders (drag the thumb to a track position), drag-and-drop
     targets, resize handles, paint strokes — anywhere a single click
     isn't enough and the gesture is "press here, drag there." Both
-    controls must be resolvable in `window`'s tree at call time.
-    """
+    controls must be resolvable in `window`'s tree at call time. Drag
+    is single-window — `dst_id` may be a `Target` (only its `.id` is
+    used) but its `.window` is ignored."""
+    if isinstance(dst_id, Target):
+        dst_id = dst_id.id
     return actions.drag(window, src_id, dst_id)
 
 
@@ -498,36 +555,27 @@ def hotkey(window: Control, *combo: str) -> None:
 # --- Checks / waits (no pre-dismiss — these are observers) -----------------
 
 
-def is_visible(window: Control, control_id: str, timeout: float = 0) -> bool:
+def is_visible(window, control_id=None, timeout: float = 0) -> bool:
     """True if the control is visible (snapshot question)."""
+    window, control_id = _unpack(window, control_id)
     return actions.is_present(window, control_id, timeout=timeout)
 
 
-def is_enabled(window: Control, control_id: str, timeout: float = 0) -> bool:
+def is_enabled(window, control_id=None, timeout: float = 0) -> bool:
     """True if the control is visible AND enabled (snapshot question)."""
+    window, control_id = _unpack(window, control_id)
     return actions.check_active(window, control_id, timeout=timeout)
 
 
-def is_color(
-    window: Control,
-    control_id: str,
-    rgb: Tuple[int, int, int],
-    dx: int = 0,
-    dy: int = 0,
-    tolerance: int = 0,
-) -> bool:
-    """True if the control's center pixel matches `rgb`."""
+def is_color(*args, dx: int = 0, dy: int = 0, tolerance: int = 0) -> bool:
+    """True if the control's center pixel matches `rgb`. Call as
+    `is_color(TARGET, rgb)` or `is_color(window, control_id, rgb)`."""
+    window, control_id, rgb = _unpack_extra(args, 1)
     actual = actions.get_color(window, control_id, x_offset=dx, y_offset=dy)
     return all(abs(a - e) <= tolerance for a, e in zip(actual, rgb))
 
 
-def is_color_area(
-    window: Control,
-    control_id: str,
-    rgb: Tuple[int, int, int],
-    tolerance: int = 0,
-    padding: int = 0,
-) -> bool:
+def is_color_area(*args, tolerance: int = 0, padding: int = 0) -> bool:
     """True if ANY pixel inside `control_id`'s bounding box matches
     `rgb` (within `tolerance` per channel). Use to detect a colored
     icon, indicator dot, or text glyph anywhere inside a control —
@@ -537,8 +585,12 @@ def is_color_area(
     `padding` shrinks the inspected region by that percent on every
     side (10 → cut 10% off each edge). Useful for skipping a
     control's outer border when sampling the inner area.
+
+    Call as `is_color_area(TARGET, rgb)` or
+    `is_color_area(window, control_id, rgb)`.
     """
     import numpy as np
+    window, control_id, rgb = _unpack_extra(args, 1)
     element, _ = actions._resolve(window, control_id)
     r = element.BoundingRectangle
     w = r.right - r.left
@@ -561,19 +613,22 @@ def is_color_area(
     return bool((np.abs(arr - list(rgb)).max(-1) <= tolerance).any())
 
 
-def wait_visible(window: Control, control_id: str, timeout: float = 10) -> bool:
+def wait_visible(window, control_id=None, timeout: float = 10) -> bool:
+    window, control_id = _unpack(window, control_id)
     return actions.is_present(window, control_id, timeout=timeout)
 
 
-def wait_enabled(window: Control, control_id: str, timeout: float = 10) -> bool:
+def wait_enabled(window, control_id=None, timeout: float = 10) -> bool:
+    window, control_id = _unpack(window, control_id)
     return actions.check_active(window, control_id, timeout=timeout)
 
 
-def wait_gone(window: Control, control_id: str, timeout: float = 10) -> bool:
+def wait_gone(window, control_id=None, timeout: float = 10) -> bool:
+    window, control_id = _unpack(window, control_id)
     return actions.wait_until_absent(window, control_id, timeout=timeout)
 
 
-def is_checked(window: Control, control_id: str):
+def is_checked(window, control_id=None):
     """Read a toggleable control's state. Returns:
       True  — the control is checked / on,
       False — the control is unchecked / off,
@@ -583,6 +638,7 @@ def is_checked(window: Control, control_id: str):
     Backed by UIA's TogglePattern, the canonical signal for checkboxes,
     radio buttons, switches, and tri-state widgets.
     """
+    window, control_id = _unpack(window, control_id)
     element, _ = actions._resolve(window, control_id)
     try:
         state = element.GetTogglePattern().ToggleState
@@ -605,7 +661,7 @@ def set_checkbox(window: Control, control_id: str, value: bool = True,
     isn't toggleable or didn't respond).
 
     Pair with `each` to set many checkboxes to the same value:
-        each(set_checkbox, window, [BOX_A, BOX_B, BOX_C], value=True)
+        each(set_checkbox, [BOX_A, BOX_B, BOX_C], value=True)
     """
     for _ in range(attempts + 1):
         if is_checked(window, control_id) == value:
@@ -615,15 +671,16 @@ def set_checkbox(window: Control, control_id: str, value: bool = True,
     return False
 
 
-def check_color(
-    window: Control, control_id: str, dx: int = 0, dy: int = 0
+def check_color(window, control_id=None, dx: int = 0, dy: int = 0
 ) -> Tuple[int, int, int]:
     """Sample the pixel color at the control's center."""
+    window, control_id = _unpack(window, control_id)
     return actions.get_color(window, control_id, x_offset=dx, y_offset=dy)
 
 
-def read_info(window: Control, control_id: str) -> dict:
+def read_info(window, control_id=None) -> dict:
     """Return a dict of every useful UIA property of `control_id`."""
+    window, control_id = _unpack(window, control_id)
     element, (cx, cy) = actions._resolve(window, control_id)
     r = element.BoundingRectangle
     visible = (r.right - r.left) > 0 and (r.bottom - r.top) > 0
@@ -648,13 +705,28 @@ def read_info(window: Control, control_id: str) -> dict:
 # --- each / sequence / popup ----------------------------------------------
 
 
-def each(verb, window: Control, ids, **kwargs) -> list:
-    """Apply `verb(window, id, **kwargs)` to each id in `ids` and
-    return the list of results. Each call goes through the verb's
-    own pre-dismiss, so a popup appearing mid-sequence is cleared
-    before the next id rather than rolling the batch back.
+def each(verb, *args, **kwargs) -> list:
+    """Apply `verb` to each id and return the list of results. Each
+    call goes through the verb's own pre-dismiss, so a popup appearing
+    mid-sequence is cleared before the next id rather than rolling
+    the batch back.
+
+    Two call forms:
+      - `each(verb, [TARGET_A, TARGET_B, ...])` — each item is a
+        `Target` carrying its own window. Mixed windows are fine.
+      - `each(verb, window, [id_a, id_b, ...])` — legacy: every id
+        runs against the same explicit `window`.
     """
-    return [verb(window, ctrl_id, **kwargs) for ctrl_id in ids]
+    if len(args) == 1:
+        ids = args[0]
+        return [verb(t, **kwargs) for t in ids]
+    if len(args) == 2:
+        window, ids = args
+        return [verb(window, ctrl_id, **kwargs) for ctrl_id in ids]
+    raise TypeError(
+        "each: expected (verb, ids) or (verb, window, ids); "
+        f"got {len(args) + 1} positional args"
+    )
 
 
 def popup(name: str, _trigger=None, *, timeout: float = 5.0,
@@ -686,13 +758,18 @@ def popup(name: str, _trigger=None, *, timeout: float = 5.0,
         _time.sleep(0.2)
 
 
-def sequence(verb, window: Control, ids, *, attempts: int = 3,
-             **kwargs) -> list:
+def sequence(verb, *args, attempts: int = 3, **kwargs) -> list:
     """Run an ordered sequence where each step depends on the previous
     (e.g. menu navigation: File → Save As → Confirm). If a popup
     appears between two steps, dismiss it and restart from id 0 —
     the popup likely collapsed the menu, so the remaining ids would
     no longer be reachable.
+
+    Two call forms (matching `each`):
+      - `sequence(verb, [TARGET_A, TARGET_B, ...])` — Target per step,
+        each carrying its own window.
+      - `sequence(verb, window, [id_a, id_b, ...])` — legacy: every
+        step runs against the same explicit `window`.
 
     `verb` is either a single callable (applied to every id) or a
     list of callables the same length as `ids` (verb[i] applied to
@@ -701,6 +778,26 @@ def sequence(verb, window: Control, ids, *, attempts: int = 3,
     Up to `attempts` tries (default 3). Use `each` for independent
     batched calls where partial progress is fine.
     """
+    if len(args) == 1:
+        ids = args[0]
+        targets_mode = True
+        # Resolve the first target's window so the popup-dismiss
+        # baseline check can do its deep-walk against something. Mixed
+        # windows are allowed; we only need *a* window for the walker.
+        if ids and isinstance(ids[0], Target):
+            from core import window as _window
+            window = getattr(_window, ids[0].window, None)
+        else:
+            window = None
+    elif len(args) == 2:
+        window, ids = args
+        targets_mode = False
+    else:
+        raise TypeError(
+            "sequence: expected (verb, ids) or (verb, window, ids); "
+            f"got {len(args) + 1} positional args"
+        )
+
     if callable(verb):
         verb_list = [verb] * len(ids)
     else:
@@ -722,7 +819,10 @@ def sequence(verb, window: Control, ids, *, attempts: int = 3,
             results = []
             interrupted = False
             for i, ctrl_id in enumerate(ids):
-                results.append(verb_list[i](window, ctrl_id, **kwargs))
+                if targets_mode:
+                    results.append(verb_list[i](ctrl_id, **kwargs))
+                else:
+                    results.append(verb_list[i](window, ctrl_id, **kwargs))
                 if i < last_idx:
                     from core.app import _enumerate_top_level_hwnds
                     current = set(_enumerate_top_level_hwnds())

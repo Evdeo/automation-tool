@@ -741,6 +741,7 @@ class TestFinalizePrompt(unittest.TestCase):
             "bbox_center": (50, 15),
             "color": (255, 0, 0),
             "win_stem": "app",
+            "window_name": "app",
             "interactable_ancestor": None,
             "default_name": default,
             "final_name": None,
@@ -757,9 +758,10 @@ class TestFinalizePrompt(unittest.TestCase):
         self.assertEqual(cap["final_name"], "MY_BTN")
         # Per-step clipboard copy was removed — full block goes to
         # clipboard once at session end. The sidecar file is the
-        # per-step audit trail.
+        # per-step audit trail; constants emit as Target tuples bound
+        # to the captured window.
         contents = inspector._snippets_file.read_text(encoding="utf-8")
-        self.assertIn('MY_BTN = "0.2.0"  # Save', contents)
+        self.assertIn('MY_BTN = Target("app", "0.2.0")  # Save', contents)
 
     def test_typed_name_overrides_default(self):
         self._set_pending(buffer="really_save", default="SAVE")
@@ -790,7 +792,7 @@ class TestFinalizePrompt(unittest.TestCase):
         inspector._finalize_prompt()
         self.assertTrue(inspector._snippets_file.exists())
         contents = inspector._snippets_file.read_text(encoding="utf-8")
-        self.assertIn('MY_BTN = "0.2.0"', contents)
+        self.assertIn('MY_BTN = Target("app", "0.2.0")', contents)
         # Trailing newline so successive finalizes append cleanly.
         self.assertTrue(contents.endswith("\n"))
 
@@ -1130,12 +1132,13 @@ class TestSessionEnd(unittest.TestCase):
         self.stdout_patcher.stop()
         _reset_state()
 
-    def _push(self, name, struct_id, label):
+    def _push(self, name, struct_id, label, window="app"):
         inspector._captures.append({
             "final_name": name,
             "struct_id": struct_id,
             "name_path": f"App:WindowControl/{label}:ButtonControl",
             "name": label,
+            "window_name": window,
         })
 
     def test_no_captures_announced(self):
@@ -1149,7 +1152,8 @@ class TestSessionEnd(unittest.TestCase):
         with mock.patch.object(inspector, "pyperclip") as mp:
             inspector._emit_session_end()
         block = mp.copy.call_args[0][0]
-        self.assertEqual(block, 'SAVE = "0.2.0"  # Save')
+        self.assertIn("from core import Target", block)
+        self.assertIn('SAVE = Target("app", "0.2.0")  # Save', block)
 
     def test_multi_capture_block_aligns_constants(self):
         self._push("SAVE", "0.2.0", "Save")
@@ -1158,7 +1162,10 @@ class TestSessionEnd(unittest.TestCase):
         with mock.patch.object(inspector, "pyperclip") as mp:
             inspector._emit_session_end()
         block = mp.copy.call_args[0][0]
-        lines = block.split("\n")
+        # Filter out the leading import + section header to get the
+        # constant lines proper.
+        lines = [ln for ln in block.split("\n")
+                 if ln and "=" in ln and "Target(" in ln]
         self.assertEqual(len(lines), 3)
         # All lines should pad the constant name to the longest width.
         widths = [line.index("=") for line in lines]
@@ -1225,7 +1232,7 @@ class TestSessionEndEmitsWebSelector(unittest.TestCase):
         _reset_state()
 
     def _push(self, name, struct_id, label, web_capture=False,
-              web_selector=None):
+              web_selector=None, window="app"):
         inspector._captures.append({
             "final_name": name,
             "struct_id": struct_id,
@@ -1233,25 +1240,29 @@ class TestSessionEndEmitsWebSelector(unittest.TestCase):
             "name": label,
             "web_capture": web_capture,
             "web_selector": web_selector,
+            "window_name": window,
         })
 
-    def test_native_capture_emits_struct_id(self):
-        # Behaviour preserved for Windows apps: no web_capture flag,
-        # no selector, struct_id wins.
+    def test_native_capture_emits_target(self):
+        # Native capture binds the control to its window via Target so
+        # user code can call `click(SAVE)` without re-passing window.
         self._push("SAVE", "0.2.0", "Save")
         with mock.patch.object(inspector, "pyperclip") as mp:
             inspector._emit_session_end()
         block = mp.copy.call_args[0][0]
-        self.assertEqual(block, 'SAVE = "0.2.0"  # Save')
+        self.assertIn('SAVE = Target("app", "0.2.0")  # Save', block)
+        self.assertIn("from core import Target", block)
 
     def test_web_capture_with_selector_emits_selector(self):
-        # Web capture with a usable CSS selector — selector wins.
+        # Web capture with a usable CSS selector — selector wins. Web
+        # captures stay as plain strings (consumed by `web_coords`,
+        # which takes the page directly, so Target wrapping is wrong).
         self._push("LOGIN", "0.5.3.2", "Sign in",
                    web_capture=True, web_selector="#login")
         with mock.patch.object(inspector, "pyperclip") as mp:
             inspector._emit_session_end()
         block = mp.copy.call_args[0][0]
-        self.assertEqual(block, 'LOGIN = "#login"  # Sign in')
+        self.assertIn('LOGIN = "#login"  # Sign in', block)
 
     def test_web_capture_without_selector_emits_struct_id_with_warning(self):
         # Web capture but UIA exposed nothing usable — fall back to
@@ -1267,17 +1278,21 @@ class TestSessionEndEmitsWebSelector(unittest.TestCase):
 
     def test_mixed_native_and_web_in_one_session(self):
         # Realistic multi-app session: Notepad (native) + a browser
-        # tab (web). Each emits its right form.
-        self._push("NOTEPAD_FILE", "0.2.0.0.0", "File")
+        # tab (web). Each emits its right form — Target for native,
+        # raw selector string for web.
+        self._push("NOTEPAD_FILE", "0.2.0.0.0", "File", window="notepad")
         self._push("LOGIN_BTN", "0.5.3.2", "Sign in",
-                   web_capture=True, web_selector="#login")
+                   web_capture=True, web_selector="#login",
+                   window="chrome")
         with mock.patch.object(inspector, "pyperclip") as mp:
             inspector._emit_session_end()
         block = mp.copy.call_args[0][0]
-        # Width is max(len("NOTEPAD_FILE"), len("LOGIN_BTN")) = 12, so
-        # NOTEPAD_FILE has no extra padding, LOGIN_BTN gets 3 spaces.
-        self.assertIn('NOTEPAD_FILE = "0.2.0.0.0"  # File', block)
-        self.assertIn('LOGIN_BTN    = "#login"  # Sign in', block)
+        self.assertIn(
+            'NOTEPAD_FILE = Target("notepad", "0.2.0.0.0")  # File',
+            block,
+        )
+        self.assertIn('LOGIN_BTN', block)
+        self.assertIn('"#login"', block)
 
 
 # --- Full info dump ---------------------------------------------------------
@@ -1788,8 +1803,8 @@ class TestRecoveryFlow(unittest.TestCase):
         with mock.patch.object(inspector, "pyperclip") as mp:
             inspector._recover()
         block = mp.copy.call_args[0][0]
-        # The original struct_id is preserved.
-        self.assertIn('NOTEPAD_FILE = "0.2.0"', block)
+        # The original struct_id is preserved, re-emitted as Target.
+        self.assertIn('NOTEPAD_FILE = Target("notepad", "0.2.0")', block)
 
     def test_silent_update_when_fingerprint_matches(self):
         # Saved fingerprint matches a live window above threshold →
@@ -1826,7 +1841,7 @@ class TestRecoveryFlow(unittest.TestCase):
              mock.patch.object(inspector, "pyperclip") as mp:
             inspector._recover()
         block = mp.copy.call_args[0][0]
-        self.assertIn('NOTEPAD_FILE = "0.2.0"', block)
+        self.assertIn('NOTEPAD_FILE = Target("notepad", "0.2.0")', block)
 
 
 class TestCtrlGroupCapture(unittest.TestCase):
@@ -1920,10 +1935,11 @@ class TestCtrlGroupCapture(unittest.TestCase):
         inspector._pending_name["buffer"] = "DIGIT_BUTTONS"
         inspector._finalize_prompt()
         block = inspector._build_session_block()
-        # The list literal block.
+        # The list literal block — group members render as Target(...)
+        # tuples bound to the parent capture's window.
         self.assertIn("DIGIT_BUTTONS = [", block)
-        self.assertIn('"0.0.0.0.1",', block)
-        self.assertIn('"0.0.0.0.2",', block)
+        self.assertIn('Target("calc", "0.0.0.0.1"),', block)
+        self.assertIn('Target("calc", "0.0.0.0.2"),', block)
         self.assertIn("]", block)
         # And under the right window header.
         self.assertIn("# --- calc ---", block)

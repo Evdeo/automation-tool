@@ -36,7 +36,7 @@ from core import (
     read_info, read_clipboard, each, no_dismiss,
     screenshot,
     log, log_csv, now, wait,
-    runner, window,
+    runner, window, Target,
 )
 
 
@@ -51,20 +51,21 @@ APPS = {
 
 
 # --- Notepad controls (struct ids from `python inspector.py`) ---------------
-FILE_MENU = "0.2.0.0.0"
-EDIT_MENU = "0.2.0.0.1"
-EDITOR    = "0.0.0"
-NEW_TAB   = "0.0.0.0.0.0"
-CLOSE_TAB = "0.0.0.0.0.10"
+FILE_MENU = Target("notepad", "0.2.0.0.0")
+EDIT_MENU = Target("notepad", "0.2.0.0.1")
+EDITOR    = Target("notepad", "0.0.0")
+NEW_TAB   = Target("notepad", "0.0.0.0.0.0")
+CLOSE_TAB = Target("notepad", "0.0.0.0.0.10")
 
 
 # --- Calculator controls (name-based — Calc has stable UIA Names) ----------
-CALC_DISPLAY = "Display is 0:TextControl"
-CALC_PLUS    = "Plus:ButtonControl"
-CALC_EQUALS  = "Equals:ButtonControl"
-CALC_CLEAR   = "Clear:ButtonControl"
+CALC_DISPLAY = Target("calc", "Display is 0:TextControl")
+CALC_PLUS    = Target("calc", "Plus:ButtonControl")
+CALC_EQUALS  = Target("calc", "Equals:ButtonControl")
+CALC_CLEAR   = Target("calc", "Clear:ButtonControl")
 CALC_DIGITS  = {
-    str(i): f"{name}:ButtonControl" for i, name in enumerate([
+    str(i): Target("calc", f"{name}:ButtonControl")
+    for i, name in enumerate([
         "Zero", "One", "Two", "Three", "Four",
         "Five", "Six", "Seven", "Eight", "Nine",
     ])
@@ -89,8 +90,8 @@ def state_init(data):
     """Health check: confirm both apps responsive. Stale popups are
     auto-dismissed by every action verb — no explicit dismiss needed."""
     print("[showcase] init: verifying apps...")
-    notepad_ok = wait_visible(window.notepad, FILE_MENU, timeout=10)
-    calc_ok = wait_visible(window.calc, CALC_PLUS, timeout=15)
+    notepad_ok = wait_visible(FILE_MENU, timeout=10)
+    calc_ok = wait_visible(CALC_PLUS, timeout=15)
     log("showcase", "init",
         f"notepad_visible={notepad_ok} calc_visible={calc_ok}")
     if not (notepad_ok and calc_ok):
@@ -103,22 +104,20 @@ def state_audit(data):
     `is_visible`, `is_enabled`, `check_color`, `is_color`, `read_info`."""
     print("[showcase] audit: each / is_visible / is_enabled / colors...")
 
-    digit_ids = list(CALC_DIGITS.values())
-    digits_visible = each(is_visible, window.calc, digit_ids)
-    digits_enabled = each(is_enabled, window.calc, digit_ids)
+    digit_targets = list(CALC_DIGITS.values())
+    digits_visible = each(is_visible, digit_targets)
+    digits_enabled = each(is_enabled, digit_targets)
 
-    plus_color = check_color(window.calc, CALC_PLUS)
-    equals_color = check_color(window.calc, CALC_EQUALS)
+    plus_color = check_color(CALC_PLUS)
+    equals_color = check_color(CALC_EQUALS)
     # Snapshot assertion: the equals button should be a "primary action"
     # color — check loosely with a 30-channel tolerance so theme variation
     # (light/dark mode) doesn't break the test. We don't fail on miss —
     # this is a soft observation logged for the user to inspect.
-    equals_blueish = is_color(
-        window.calc, CALC_EQUALS, equals_color, tolerance=30,
-    )
+    equals_blueish = is_color(CALC_EQUALS, equals_color, tolerance=30)
 
-    editor_info = read_info(window.notepad, EDITOR)
-    notepad_menu_color = check_color(window.notepad, FILE_MENU)
+    editor_info = read_info(EDITOR)
+    notepad_menu_color = check_color(FILE_MENU)
 
     log_csv(
         _audit_csv(),
@@ -153,28 +152,28 @@ def state_compute(data):
 
     # Reset any stale state. `click_when_enabled` waits for the button
     # to be ready — Clear is sometimes still settling after a prior run.
-    click_when_enabled(window.calc, CALC_CLEAR, timeout=5)
+    click_when_enabled(CALC_CLEAR, timeout=5)
     wait(0.2)
 
-    each(click, window.calc, _digits("47"))
-    click(window.calc, CALC_PLUS)
-    each(click, window.calc, _digits("32"))
+    each(click, _digits("47"))
+    click(CALC_PLUS)
+    each(click, _digits("32"))
 
     # `click_after` adds a deliberate pause before equals — useful for
     # apps that need a beat to recompute before the user-driven action
     # lands. Here it just demonstrates the verb.
-    click_after(window.calc, CALC_EQUALS, delay=0.3)
+    click_after(CALC_EQUALS, delay=0.3)
 
     # Wait for the equals button to settle back into "ready for next
     # input" state — `wait_enabled` is the right verb here, not
     # `wait_visible` (the button stayed visible the whole time).
-    wait_enabled(window.calc, CALC_EQUALS, timeout=5)
+    wait_enabled(CALC_EQUALS, timeout=5)
 
     # `read_info` on a stable, name-fixed control (the Plus button
     # never changes its name). Demonstrates the verb without bumping
     # into Calculator's "Display is N" naming convention where N
     # mutates after every computation.
-    plus_info = read_info(window.calc, CALC_PLUS)
+    plus_info = read_info(CALC_PLUS)
     print(f"  Plus button class: {plus_info['class_name']!r} "
           f"AutomationId={plus_info['automation_id']!r}")
 
@@ -195,7 +194,7 @@ def state_swap_back(data):
     auto-foreground their target window — no explicit `bring_to_foreground`
     needed in user code."""
     print("[showcase] swap_back: returning focus to Notepad...")
-    if not is_visible(window.notepad, FILE_MENU):
+    if not is_visible(FILE_MENU):
         log("showcase", "swap_failed", "notepad menu not visible")
         return None, data
     return "compose_report", data
@@ -219,7 +218,7 @@ def state_compose_report(data):
         f"Calculator computed 47 + 32 = {getattr(data, 'calc_result', '?')}\n"
         "Audit: see data/output/showcase_audit.csv\n"
     )
-    fill(window.notepad, EDITOR, body)
+    fill(EDITOR, body)
     # `type` doesn't touch the window — it sends keys to whatever has
     # focus. After `fill`, the editor still has focus, so this appends.
     type("\n--- end of report ---\n")
@@ -235,9 +234,9 @@ def state_click_family_demo(data):
     builds have different context menu shapes."""
     print("[showcase] click_family: double_click + right_click + dismiss...")
     try:
-        double_click(window.notepad, EDITOR)
+        double_click(EDITOR)
         wait(0.3)
-        right_click(window.notepad, EDITOR)
+        right_click(EDITOR)
         wait(0.4)
         # Close the context menu so it doesn't bleed into the screenshot.
         hotkey(window.notepad, "escape")
@@ -256,8 +255,8 @@ def state_visual_snapshot(data):
     out = config.OUTPUT_DIR / "showcase_report.png"
     screenshot(window.notepad, out)
 
-    file_color = check_color(window.notepad, FILE_MENU)
-    edit_color = check_color(window.notepad, EDIT_MENU)
+    file_color = check_color(FILE_MENU)
+    edit_color = check_color(EDIT_MENU)
     log_csv(
         config.OUTPUT_DIR / "showcase_colors.csv",
         [now(), "notepad_file", list(file_color),
@@ -302,12 +301,12 @@ def state_close(data):
     """Close the active tab. Defensive `is_visible` check so a borked
     state machine doesn't try to drive a missing menu."""
     print("[showcase] close: tearing down the tab...")
-    if not is_visible(window.notepad, FILE_MENU):
+    if not is_visible(FILE_MENU):
         log("showcase", "close_skipped", "menu missing")
         return None, data
-    click(window.notepad, FILE_MENU)
-    if wait_visible(window.notepad, CLOSE_TAB, timeout=3):
-        click(window.notepad, CLOSE_TAB)
+    click(FILE_MENU)
+    if wait_visible(CLOSE_TAB, timeout=3):
+        click(CLOSE_TAB)
     return "summary", data
 
 

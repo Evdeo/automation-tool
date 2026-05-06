@@ -15,13 +15,32 @@ Names map to executable paths via `register(name, path)`. The runner
 calls `register` for every entry in the `apps={...}` dict at start, so
 user code only ever passes the name.
 
+`Target(window, id)` bundles a control id with the window it belongs
+to so verbs can take one argument instead of two: `click(EDITOR)`
+instead of `click(window.notepad, EDITOR_ID)`. The inspector emits
+captures in this form. Action verbs still accept the legacy
+`(window, control_id)` shape — pass either one.
+
 Reserved attribute names: `open`, `close`, `get`, `register`,
-`registry`. Don't name an app one of these.
+`registry`, `Target`. Don't name an app one of these.
 """
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, NamedTuple, Optional
 
 if TYPE_CHECKING:
     import uiautomation as auto
+
+
+class Target(NamedTuple):
+    """Window-bound control identifier emitted by the inspector.
+
+    `window` is a registered app name (key in the `apps={...}` dict
+    passed to `runner.start`); `id` is the struct_id, name-based
+    locator, or web selector that identifies the control inside that
+    window. Action verbs unpack this automatically — call
+    `click(BUTTON)` and the live `Control` for `BUTTON.window` is
+    looked up from the registry."""
+    window: str
+    id: str
 
 
 _windows: dict = {}   # name -> Control (live window handle)

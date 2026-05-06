@@ -48,11 +48,11 @@ class TestStateNotepad(_WindowFixture):
              mock.patch.object(run, "now", return_value="2026-01-01"):
             nxt, _ = run.state_notepad(data)
         self.mock_open.assert_called_once_with("notepad")
-        # File menu -> New tab as a dependent sequence.
+        # File menu -> New tab as a dependent sequence; Targets carry
+        # their own window so `sequence` takes the list directly.
         mseq.assert_called_once_with(run.click_when_enabled,
-                                     window.notepad,
                                      [run.FILE_MENU, run.NEW_TAB])
-        mfill.assert_called_once_with(window.notepad, run.EDITOR,
+        mfill.assert_called_once_with(run.EDITOR,
                                       "timestamp: 2026-01-01\n")
         self.mock_close.assert_called_once_with("notepad")
         self.assertEqual(nxt, "calc")
@@ -86,8 +86,8 @@ class TestStateCalc(_WindowFixture):
         meach.assert_called_once()
         args, kwargs = meach.call_args
         self.assertIs(args[0], run.click_after)
-        self.assertIs(args[1], window.calc)
-        self.assertEqual(len(args[2]), 6)  # 4, 7, +, 3, 2, =
+        # Targets-only call form: `each(verb, targets, **kw)`.
+        self.assertEqual(len(args[1]), 6)  # 4, 7, +, 3, 2, =
         self.assertEqual(kwargs.get("delay"), 0.1)
         mhk.assert_called_once_with(window.calc, "ctrl", "c")
         mlog.assert_called_once_with("results", "calc_result", "79")

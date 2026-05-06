@@ -48,14 +48,14 @@ Release Ctrl and the inspector prompts once for the group's name;
 the session block then emits a list literal:
 
     DIGIT_BUTTONS = [
-        "0.0.0.0.1",   # ButtonControl "One"
-        "0.0.0.0.2",   # ButtonControl "Two"
-        "0.0.0.0.3",   # ButtonControl "Three"
+        Target("calc", "0.0.0.0.1"),  # ButtonControl "One"
+        Target("calc", "0.0.0.0.2"),  # ButtonControl "Two"
+        Target("calc", "0.0.0.0.3"),  # ButtonControl "Three"
     ]
 
-Pairs naturally with `each` and `sequence` — those verbs take a
-list of ids as their second argument, so a Ctrl-captured group
-drops straight in: `each(click, window.calc, DIGIT_BUTTONS)`.
+Pairs naturally with `each` and `sequence` — pass the list directly:
+`each(click, DIGIT_BUTTONS)`. Each `Target` carries its own window so
+you don't repeat `window.calc` per call.
 
 Multi-app support
 -----------------
@@ -152,7 +152,7 @@ _skip_popup_hwnds = set()
 # Ctrl+middle-click multi-select. While Ctrl is held, MMB presses
 # accumulate into `_group_buffer` instead of opening individual name
 # prompts. On Ctrl release the buffer is committed as one list-valued
-# capture: `GROUP_NAME = ["id_a", "id_b", ...]` in the session block.
+# capture: `GROUP_NAME = [Target(...), ...]` in the session block.
 _ctrl_held = False
 _group_buffer = []          # list of element-info dicts
 _group_counter = 0          # for default name suggestions
@@ -1094,8 +1094,9 @@ def _finalize_prompt():
         # snippet is a multi-line list assignment; sidecar shows it
         # as such for the audit trail.
         members = commit["members"]
-        ids = ", ".join(f'"{m["struct_id"]}"' for m in members)
-        snippet = f"{final} = [{ids}]"
+        wn = window_name
+        items = ", ".join(f'Target("{wn}", "{m["struct_id"]}")' for m in members)
+        snippet = f"{final} = [{items}]"
     else:
         # Rename the screenshot file to match the final element name so
         # recovery mode can locate it.
@@ -1118,7 +1119,17 @@ def _finalize_prompt():
                 pass
 
         label = _readable_label(commit)
-        snippet = f'{final} = "{commit["struct_id"]}"  # {label}'
+        if commit.get("web_capture"):
+            # Web capture: emit a plain string locator (CSS selector or
+            # struct_id fallback). `web_coords(page, selector)` takes a
+            # string, so wrapping in Target would be the wrong shape.
+            locator = commit.get("web_selector") or commit["struct_id"]
+            snippet = f'{final} = "{locator}"  # {label}'
+        else:
+            snippet = (
+                f'{final} = Target("{window_name}", "{commit["struct_id"]}")'
+                f'  # {label}'
+            )
 
     # Sidecar file is a quiet audit trail — kept so a crashed session
     # doesn't lose captures. Per-step clipboard copy was removed: the
@@ -1531,7 +1542,17 @@ def _build_session_block():
         if meta["is_app"]:
             apps_pairs.append((name, meta["spec"]))
 
+    # Emit `from core import Target` whenever any native (non-web)
+    # capture is in the session — those lines reference `Target(...)`
+    # and the import has to land at the top of the pasted block.
+    needs_target_import = any(
+        not c.get("web_capture") and c.get("final_name") for c in _captures
+    )
+
     lines = []
+    if needs_target_import:
+        lines.append("from core import Target")
+        lines.append("")
     if apps_pairs:
         rendered = ", ".join(f'"{n}": "{s}"' for n, s in apps_pairs)
         lines.append(f"APPS = {{{rendered}}}")
@@ -1551,7 +1572,7 @@ def _build_session_block():
             lines.append(f"# --- {window} ---")
         # Width is computed across single captures only — group
         # captures span their own multi-line block, so they don't
-        # share the column with `NAME = "id"  # label` lines.
+        # share the column with `NAME = ...  # label` lines.
         singles = [c for c in caps if c.get("kind") != "group"
                    and c.get("final_name")]
         width = max((len(c["final_name"]) for c in singles), default=0)
@@ -1563,9 +1584,11 @@ def _build_session_block():
                 _render_group_capture(cap)
                 continue
             label = _readable_label(cap)
+            wn = cap.get("window_name") or window or ""
             web_selector = cap.get("web_selector")
             if web_selector:
-                # Web capture with a stable CSS selector — preferred locator.
+                # Web capture with a stable CSS selector — emitted as a
+                # plain string for `web_coords(page, selector)`.
                 lines.append(f'{final:<{width}} = "{web_selector}"  # {label}')
             elif cap.get("web_capture"):
                 # Web capture but no usable selector — emit struct_id and
@@ -1575,35 +1598,43 @@ def _build_session_block():
                     f'  (no stable web selector — DevTools may help)'
                 )
             else:
-                # Native capture — struct_id as today.
-                lines.append(f'{final:<{width}} = "{cap["struct_id"]}"  # {label}')
+                # Native capture — Target binds the control to its window
+                # so user code calls `click(NAME)` directly.
+                lines.append(
+                    f'{final:<{width}} = Target("{wn}", "{cap["struct_id"]}")'
+                    f'  # {label}'
+                )
         lines.append("")
 
     def _render_group_capture(cap):
         """Render a Ctrl+click multi-select capture as a list literal:
 
             GROUP_NAME = [
-                "0.0.0",   # Save
-                "0.0.1",   # Cancel
+                Target("notepad", "0.0.0"),  # Save
+                Target("notepad", "0.0.1"),  # Cancel
             ]
 
         Members keep their per-element struct_id and a short label so
         the array is self-documenting in the user's source file.
+        Group members share the parent capture's window_name.
         """
         final = cap["final_name"]
         members = cap["members"]
+        wn = cap.get("window_name") or ""
         lines.append(f"{final} = [")
-        # Width over the quoted struct_id strings so the comments line up.
-        id_width = max(len(f'"{m["struct_id"]}",') for m in members)
+        # Width over the rendered Target tuples so the comments line up.
+        id_width = max(
+            len(f'Target("{wn}", "{m["struct_id"]}"),') for m in members
+        )
         for m in members:
-            quoted = f'"{m["struct_id"]}",'
+            entry = f'Target("{wn}", "{m["struct_id"]}"),'
             label_bits = []
             if m.get("control_type"):
                 label_bits.append(m["control_type"])
             if m.get("name"):
                 label_bits.append(f'"{m["name"]}"')
             label = " ".join(label_bits) if label_bits else m["struct_id"]
-            lines.append(f"    {quoted:<{id_width}}  # {label}")
+            lines.append(f"    {entry:<{id_width}}  # {label}")
         lines.append("]")
 
     if unbound:
@@ -1740,8 +1771,18 @@ def run(scope=None):
 
 # --- Recovery mode ----------------------------------------------------------
 
+# Recovery parser accepts both legacy `NAME = "id"` strings and the
+# current `NAME = Target("window", "id")` form. The Target window name
+# is captured into `<twin>` so the recover code can prefer it over the
+# `# --- header ---` window when reattaching captures.
 _CONST_RE = re.compile(
-    r'^(?P<name>[A-Z_][A-Z0-9_]*)\s*=\s*"(?P<sid>[\d.]+)"\s*(?:#\s*(?P<label>.*))?$'
+    r'^(?P<name>[A-Z_][A-Z0-9_]*)\s*=\s*'
+    r'(?:'
+    r'Target\(\s*"(?P<twin>[a-z0-9_]+)"\s*,\s*"(?P<tsid>[\d.]+)"\s*\)'
+    r'|'
+    r'"(?P<sid>[\d.]+)"'
+    r')'
+    r'\s*(?:#\s*(?P<label>.*))?$'
 )
 _HEADER_RE = re.compile(r'^#\s*---\s*(?P<window>[a-z0-9_]+)\s*---\s*$')
 _APPS_RE = re.compile(r'^APPS\s*=\s*(?P<dict>\{.*\})\s*$')
@@ -1779,9 +1820,15 @@ def _parse_session_file(path):
             continue
         m = _CONST_RE.match(s)
         if m:
-            windows.setdefault(current, []).append({
+            twin = m.group("twin")
+            sid = m.group("tsid") or m.group("sid")
+            # Target form binds the window to the line itself; prefer
+            # that over the section header so recovery survives a
+            # reordered or missing `# --- window ---` block.
+            target_window = twin or current
+            windows.setdefault(target_window, []).append({
                 "name": m.group("name"),
-                "struct_id": m.group("sid"),
+                "struct_id": sid,
                 "label": (m.group("label") or "").strip(),
             })
     return {"apps": apps, "windows": windows}
