@@ -63,7 +63,13 @@ The inspector no longer locks to a single process. Every window the
 user inspects is registered:
 
   * The first HWND seen for each exe stem becomes a primary "app"
-    window. Its exe stem is the window's name (e.g. ``notepad``).
+    window. The inspector prompts for an **alias** (defaulting to the
+    exe stem) — press Enter to accept, or type a different name. The
+    alias is the key in ``APPS = {...}`` and the first argument of
+    every ``Target(alias, id)`` referencing this window, so an
+    exe-path change — or the OS hosting the window in a different
+    process (UWP apps under ApplicationFrameHost.exe, for example) —
+    only edits the APPS line; the rest of the run file stays put.
   * Any additional HWND in an already-known process is a "popup". The
     inspector prompts once for the popup's name.
 
@@ -531,6 +537,51 @@ def _disambiguate_window_name(base):
     return f"{base}_{n}"
 
 
+def _read_line(prompt, default_name):
+    """Tiny synchronous prompt: print `prompt`, read keystrokes from
+    msvcrt until Enter, return the trimmed buffer or `default_name`
+    on empty input. Ctrl+C returns None so the caller can fall back."""
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    buf = ""
+    while True:
+        try:
+            c = msvcrt.getwch()
+        except Exception:
+            break
+        if c in ("\r", "\n"):
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            break
+        if c == "\b":
+            if buf:
+                buf = buf[:-1]
+                sys.stdout.write("\b \b")
+                sys.stdout.flush()
+        elif c == "\x03":
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return None
+        elif c.isprintable():
+            buf += c
+            sys.stdout.write(c)
+            sys.stdout.flush()
+    return buf.strip() or default_name
+
+
+def _prompt_app_alias(exe_stem, spec):
+    """Prompt for the alias to register a freshly-detected app under.
+    The alias is the dict key in `APPS = {...}` and the first arg of
+    every `Target(alias, id)` referencing this window — chosen once at
+    capture time so an exe-path change (or the OS deciding to host the
+    window in a different process, e.g. UWP apps showing up under
+    ApplicationFrameHost) only edits the APPS line. Default is the
+    exe stem; press Enter to accept. Returns the chosen alias."""
+    sys.stdout.write(f"\n** new app detected: {spec}\n")
+    chosen = _read_line(f"alias [{exe_stem}]: ", exe_stem)
+    return chosen or exe_stem
+
+
 def _prompt_save_popup(title, default_name):
     """Synchronous y/N prompt: should this newly-detected popup HWND
     be saved as a known fingerprint? Returns the chosen name, or None
@@ -606,13 +657,19 @@ def _classify_window(win):
         return None, None
 
     if win_stem not in _stems_seen:
-        name = _disambiguate_window_name(win_stem)
         title = ""
         try:
             title = win.Name or ""
         except Exception:
             pass
         spec = _exe_path_for_pid(win_pid)
+        # Prompt for the alias so the user — not the OS — picks the
+        # dict key in `APPS = {...}` and the first arg of every
+        # `Target(alias, id)`. Defaults to the exe stem (one Enter
+        # accepts it). Disambiguated against already-registered names
+        # so a typed-in collision still resolves to a unique key.
+        chosen = _prompt_app_alias(win_stem, spec)
+        name = _disambiguate_window_name(_sanitize_lower(chosen) or win_stem)
         _windows[name] = {
             "hwnd": win_hwnd,
             "is_app": True,
